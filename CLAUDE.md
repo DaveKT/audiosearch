@@ -26,6 +26,13 @@ assuming something is still an open question. Follow the milestone order (M0 →
 M2 → M3 → M4 → M5) rather than building out of order; M1 (schema, CLI, search) has
 not started yet.
 
+The repo is public at `https://github.com/DaveKT/audiosearch` (`main` branch). A
+top-level `README.md` is the human-facing entry point (status summary, build/test
+commands) — keep it in sync with this file and the plan doc rather than letting it
+drift. `.gitignore` excludes `.build/`, generated (non-`runs/`) test fixtures, and the
+throwaway `scratch/` verification directory (see plan Section 14's GRDB/FTS5 check) —
+none of those should end up tracked.
+
 ## What audiosearch is
 
 A native macOS command-line tool that transcribes a local audio/video library with
