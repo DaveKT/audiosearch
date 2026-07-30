@@ -5,10 +5,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Repository state
 
 This repository currently contains a single design document,
-`audiosearch Implementation Plan Swift v2.md`, and no Swift source yet — no
-`Package.swift`, no `Sources/` tree, no tests, no git history. There is nothing to
-build, lint, or run yet. Before writing any code, read the full plan document; it is
-the authoritative spec and supersedes any summary below if the two ever disagree.
+`doc/plans/2026-07-audiosearch-implementation-plan.md`, and no Swift source yet — no
+`Package.swift`, no `Sources/` tree, no tests. There is nothing to build, lint, or run
+yet. Before writing any code, read the full plan document; it is the authoritative
+spec and supersedes any summary below if the two ever disagree.
 
 When implementation begins, follow the milestone order in the plan's Section 14 (M0
 spike → M1 skeleton/search → M2 transcription/indexing → M3 incremental

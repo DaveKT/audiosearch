@@ -1,4 +1,7 @@
-# audiosearch: Implementation Plan
+Plan: Audiosearch Implementation
+===============================================================================
+
+> Status: Planning
 
 Native macOS command line utility for transcribing and searching a local audio and video
 library. Replaces `audio-search.rb`, a Ruby script that shelled out to `ffmpeg` and
