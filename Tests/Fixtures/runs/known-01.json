@@ -1,0 +1,47 @@
+[
+  {
+    "endMS" : 300,
+    "startMS" : 0,
+    "text" : "The"
+  },
+  {
+    "endMS" : 420,
+    "startMS" : 300,
+    "text" : " quick"
+  },
+  {
+    "endMS" : 660,
+    "startMS" : 420,
+    "text" : " brown"
+  },
+  {
+    "endMS" : 960,
+    "startMS" : 660,
+    "text" : " fox"
+  },
+  {
+    "endMS" : 1440,
+    "startMS" : 960,
+    "text" : " jumps"
+  },
+  {
+    "endMS" : 1560,
+    "startMS" : 1440,
+    "text" : " over"
+  },
+  {
+    "endMS" : 1740,
+    "startMS" : 1560,
+    "text" : " the"
+  },
+  {
+    "endMS" : 2160,
+    "startMS" : 1740,
+    "text" : " lazy"
+  },
+  {
+    "endMS" : 2670,
+    "startMS" : 2160,
+    "text" : " dog."
+  }
+]

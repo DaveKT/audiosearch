@@ -1,0 +1,32 @@
+[
+  {
+    "endMS" : 660,
+    "startMS" : 0,
+    "text" : "Propagation"
+  },
+  {
+    "endMS" : 960,
+    "startMS" : 660,
+    "text" : " forecast"
+  },
+  {
+    "endMS" : 1380,
+    "startMS" : 960,
+    "text" : " for"
+  },
+  {
+    "endMS" : 1500,
+    "startMS" : 1380,
+    "text" : " the"
+  },
+  {
+    "endMS" : 1920,
+    "startMS" : 1500,
+    "text" : " Eastern"
+  },
+  {
+    "endMS" : 2760,
+    "startMS" : 1920,
+    "text" : " Seaboard."
+  }
+]

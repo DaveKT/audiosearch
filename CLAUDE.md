@@ -4,17 +4,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-This repository currently contains a single design document,
-`doc/plans/2026-07-audiosearch-implementation-plan.md`, and no Swift source yet — no
-`Package.swift`, no `Sources/` tree, no tests. There is nothing to build, lint, or run
-yet. Before writing any code, read the full plan document; it is the authoritative
-spec and supersedes any summary below if the two ever disagree.
+The M0 spike (plan Section 14) is complete except one item pending a real audio
+sample (accuracy on jargon/proper nouns, Risk 6). The package builds and runs:
 
-When implementation begins, follow the milestone order in the plan's Section 14 (M0
-spike → M1 skeleton/search → M2 transcription/indexing → M3 incremental
-robustness → M4 durability → M5 polish) rather than building features out of order —
-several M0 questions (see below) determine whether later sections are even buildable
-as written.
+- `Package.swift` — a minimal M0 scaffold: an executable target only, no
+  `ArgumentParser`/GRDB dependencies yet. This is deliberately smaller than the target
+  manifest in plan Section 5.2 — widen it to that shape when M1 begins.
+- `Sources/audiosearch/main.swift` — throwaway spike code (asset installation,
+  transcription, run extraction). Expect this to be deleted/rewritten once M1 starts;
+  don't build on top of it.
+- `Tests/audiosearchTests/ExtractRunsTests.swift` — unit tests for `extractRuns`
+  against the SDK's real `AttributeScopes.SpeechAttributes.TimeRangeAttribute`.
+- `Tests/Fixtures/` — `say`-generated audio (`known-01.aiff`, `known-02.aiff`,
+  `known-02.mp4`/`.mov`, a ~36 min `long-30min.aiff` used for the throughput
+  baseline) and `Tests/Fixtures/runs/*.json` recorded `RawRun` fixtures for future
+  `Segmenter` tests (plan Section 13.2).
+
+The plan document remains authoritative — read it before changing course on
+architecture, and check it for "resolved in M0" / "confirmed in M0" notes before
+assuming something is still an open question. Follow the milestone order (M0 → M1 →
+M2 → M3 → M4 → M5) rather than building out of order; M1 (schema, CLI, search) has
+not started yet.
 
 ## What audiosearch is
 
@@ -31,7 +41,7 @@ Hard platform floor: macOS 26 on Apple silicon (Speech framework requirement). N
 custom vocabulary/prompt conditioning, no model pinning, no model selection — these
 are accepted constraints, not oversights (plan Section 2).
 
-## Planned architecture (once code exists)
+## Planned architecture
 
 Five subcommands share one SQLite database, canonical-path-keyed and independent of
 invocation directory: `index [PATHS...]`, `search QUERY`, `status`, `prune`,
@@ -44,10 +54,10 @@ schema, indexing, search, or CLI code (plan Risk 6).
 
 Key design decisions worth knowing before touching related code:
 
-- **Two divergent transcription input paths are likely required**: `AVAudioFile`
-  directly for audio containers, but video (`.mov`/`.mp4`) may need a separate
-  `AVAssetReader` → `AsyncStream<AnalyzerInput>` path (Section 7.2). Which case holds
-  is an M0 question that determines whether video support ships in M2 or moves to M5.
+- **A single input path handles both audio and video** — confirmed in M0:
+  `AVAudioFile` opens `.mov`/`.mp4` directly, including files with a real encoded
+  video track. The `AVAssetReader` → `AsyncStream<AnalyzerInput>` fallback (Section
+  7.2) is documented but not built; video support ships in M2, not M5.
 - **Segmentation is pure and deterministic** (`[RawRun]` + parameters → `[Segment]`),
   deliberately decoupled from the Speech framework so it can be unit tested against
   recorded fixtures rather than through live transcription (Section 7.5, 13.2).
@@ -71,20 +81,23 @@ Key design decisions worth knowing before touching related code:
   everything else (progress, warnings, `status`, `doctor`) goes to stderr (Section
   10.2). Downstream piping (`--format tsv`, `jq`) depends on this.
 
-## Build/test (once the package exists)
-
-Not yet runnable. The plan specifies (Section 10.4):
+## Build/test
 
 ```bash
-swift build -c release
-cp .build/release/audiosearch /usr/local/bin/
+swift build                       # debug
+swift build -c release            # release; ~39x real-time transcription measured this way
+swift test                        # runs Tests/audiosearchTests
+swift run audiosearch <path>       # M0 spike: transcribes one file, prints runs, writes <path>.runs.json
 ```
 
-Test fixtures are generated, not committed — `say -o Tests/Fixtures/*.aiff "..."`
-produces deterministic audio with known expected transcripts at test setup (Section
-13.1). Segmentation is tested in isolation against committed JSON `RawRun` fixtures
-rather than through live transcription, since transcription is non-deterministic and
-segmentation is not (Section 13.2).
+Eventual install step, once M1+ exists (plan Section 10.4): `cp
+.build/release/audiosearch /usr/local/bin/`.
+
+Audio fixtures are generated, not committed as source — `say -o Tests/Fixtures/*.aiff
+"..."` produces deterministic audio with known expected transcripts (Section 13.1).
+`Tests/Fixtures/runs/*.json` recorded `RawRun` fixtures **are** committed, since
+they're small JSON and let `Segmenter` be tested in isolation without live
+transcription once it's written (Section 13.2).
 
 ## Writing plans
 
@@ -124,3 +137,19 @@ that's now in the codebase. Leave diagrammatic code-blocks in place.
 
 Once marked as "Complete", the plan can be moved into the doc/plans/archive/
 subdirectory.
+
+## Running subtask agents
+
+When spinning up an agent to work on a subtask (e.g. a background implementation or
+research task), launch it inside a named `tmux` session rather than backgrounding it
+directly, so its progress can be attached to and monitored instead of only seen after
+it finishes:
+
+```bash
+tmux new-session -d -s <task-name> '<command>'
+tmux attach -t <task-name>     # monitor output; detach with Ctrl-b d
+tmux ls                        # list in-flight task sessions
+tmux kill-session -t <task-name>  # clean up once the task is done
+```
+
+Name the session after the task so multiple concurrent agents stay identifiable.

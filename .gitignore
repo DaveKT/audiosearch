@@ -1,0 +1,18 @@
+# Swift Package Manager build artifacts
+.build/
+.swiftpm/
+
+# Generated audio/test fixtures (plan Section 13.1) — regenerated via `say` at test
+# setup, not committed. Tests/Fixtures/runs/*.json is a separate, committed set of
+# curated RawRun fixtures (Section 13.2) and is untouched by these patterns.
+Tests/Fixtures/*.aiff
+Tests/Fixtures/*.mp4
+Tests/Fixtures/*.mov
+Tests/Fixtures/*.txt
+Tests/Fixtures/*.runs.json
+
+# Throwaway M0 verification scratch work, not part of the shipped package
+/scratch/
+
+# macOS
+.DS_Store

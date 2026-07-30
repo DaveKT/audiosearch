@@ -1,7 +1,7 @@
 Plan: Audiosearch Implementation
 ===============================================================================
 
-> Status: Planning
+> Status: Underway — M0 spike complete (2026-07-30), one item pending. See Section 14.
 
 Native macOS command line utility for transcribing and searching a local audio and video
 library. Replaces `audio-search.rb`, a Ruby script that shelled out to `ffmpeg` and
@@ -105,6 +105,11 @@ Resources/Info.plist     embedded via linker section, see 10.3
 ```
 
 ### 5.2 Package manifest
+
+This is the target manifest for M1 onward. The M0 spike checked in at
+`Package.swift` is deliberately smaller — no `ArgumentParser`/GRDB dependencies, no
+linker section — since M0 excludes persistence and CLI parsing by design (Section 14).
+Widen it to the shape below when M1 begins.
 
 ```swift
 // swift-tools-version: 5.10
@@ -289,22 +294,23 @@ batch rather than mid-run.
 
 ### 7.2 Input paths and duration
 
-Two distinct input paths are required, and which one applies must be resolved in M0.
+**Resolved in M0** (Section 14): a single input path handles both audio and video.
+`AVAudioFile(forReading:)` opens `.mov` and `.mp4` directly, confirmed against fixtures
+with a real encoded video track, not just an audio-only container. The `AVAssetReader`
+fork described below turned out not to be necessary for the containers tested so far, so
+video support ships in M2 rather than being deferred to M5. See Risk 9 (resolved).
 
-**Audio containers.** `AVAudioFile(forReading:)` opens the file directly and is passed to
-`analyzer.analyzeSequence(from:)`. Duration is `Double(file.length) /
+**Audio and video containers.** `AVAudioFile(forReading:)` opens the file directly and is
+passed to `analyzer.analyzeSequence(from:)`. Duration is `Double(file.length) /
 file.processingFormat.sampleRate`.
 
-**Video containers.** `AVAudioFile` is documented for audio files. If it does not open
-`.mov` and `.mp4`, a second input path is required: `AVURLAsset` plus `AVAssetReader` over
-the first audio track, converted to the format returned by
+**Fallback path, not currently needed.** If a container type encountered later in the real
+corpus doesn't open via `AVAudioFile`, the fallback is `AVURLAsset` plus `AVAssetReader`
+over the first audio track, converted to the format returned by
 `SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith:)`, fed through an
-`AsyncStream<AnalyzerInput>` to `analyzer.start(inputSequence:)`. Duration comes from
-`try await asset.load(.duration)`.
-
-This is a material fork in the implementation. M0 must determine which case holds. If the
-`AVAssetReader` path is required, video support moves to M5 rather than M2, and the
-extension allowlist ships audio-only in the first working version. See Risk 9.
+`AsyncStream<AnalyzerInput>` to `analyzer.start(inputSequence:)`. Duration would come from
+`try await asset.load(.duration)`. Left documented here in case it's needed, but M2 should
+not build it preemptively.
 
 ### 7.3 Analysis
 
@@ -373,13 +379,15 @@ func extractRuns(from attributed: AttributedString) -> [RawRun] {
 `RawRun` is `Codable` specifically so that recorded runs can serve as segmentation test
 fixtures (Section 13.2).
 
-The exact attribute accessor spelling and the scope import required to reach it must be
-confirmed against the SDK during M0. This is the most likely place for the code above to
-need adjustment.
+**Confirmed in M0.** The code above compiles and runs as written; no adjustment was
+needed. The attribute is `Foundation.AttributeScopes.SpeechAttributes.TimeRangeAttribute`
+(`Value = CMTimeRange`), reached via `AttributeDynamicLookup`'s dynamic member
+(`run.audioTimeRange`), confirmed directly against the SDK's `.swiftinterface`. Covered by
+unit tests in `Tests/audiosearchTests/ExtractRunsTests.swift`.
 
 ### 7.5 Segmentation
 
-Speech framework runs are fine grained, potentially word level, and the caller owns
+Speech framework runs are fine grained, confirmed word-level in M0, and the caller owns
 segment construction. Segment size is the primary search-quality parameter: short
 segments give precise timestamps but break phrase matches across rows, while long
 segments do the reverse.
@@ -572,12 +580,14 @@ from `FileManager.default.url(for: .applicationSupportDirectory, in: .userDomain
 Storing canonicalized absolute paths (`URL.resolvingSymlinksInPath().standardized`) makes
 the index independent of invocation directory.
 
-**Speech recognition authorization.** The older `SFSpeechRecognizer` required
-`NSSpeechRecognitionUsageDescription` in an `Info.plist` and an explicit authorization
-prompt. `SpeechAnalyzer` is on-device only, and existing command line tools using it ship
-as plain Homebrew binaries, which suggests file-based analysis does not require the
-prompt. If it does, a bare executable has no bundle from which to read a plist, and the
-fix is to embed one in a `__TEXT,__info_plist` linker section as shown in Section 5.2.
+**Speech recognition authorization — confirmed in M0.** The older `SFSpeechRecognizer`
+required `NSSpeechRecognitionUsageDescription` in an `Info.plist` and an explicit
+authorization prompt. `SpeechAnalyzer` is on-device only, and file-based transcription
+from a bare CLI binary (no app bundle) was confirmed not to require the prompt:
+`SFSpeechRecognizer.authorizationStatus()` stayed `.notDetermined` for the whole run, and
+analysis still succeeded. The `__TEXT,__info_plist` linker-section fallback in Section 5.2
+was therefore not needed on this system (Xcode 26.6, macOS 27.0) and can be dropped from
+the manifest unless a future macOS point release changes this behavior.
 
 **File access.** Reading from `~/Documents`, `~/Desktop`, or `~/Downloads` triggers TCC
 against the calling process, meaning the terminal application rather than `audiosearch`.
@@ -826,25 +836,38 @@ those tests fast and unambiguous.
 
 ## 14. Milestones
 
-### M0: Spike (one day, before any structural work)
+### M0: Spike (one day, before any structural work) — Complete 2026-07-30, one item pending
 
-A throwaway `main.swift`, no persistence, no CLI parsing. Every item is a question whose
-answer changes later sections.
+A throwaway `main.swift`, no persistence, no CLI parsing. Every item was a question whose
+answer changes later sections. Results:
 
-- Transcribe one audio file from a bare executable with no application bundle
-- Confirm whether an authorization prompt appears, and whether it can be satisfied
-- **Determine whether `AVAudioFile` opens `.mov` and `.mp4`.** If not, prototype the
-  `AVAssetReader` path and move video support to M5 (Section 7.2, Risk 9)
+- Transcribe one audio file from a bare executable with no application bundle — **done.**
+  `Package.swift` (swift-tools-version 5.10, no external dependencies yet) and
+  `Sources/audiosearch/main.swift` transcribed a `say`-generated fixture successfully.
+- Confirm whether an authorization prompt appears, and whether it can be satisfied —
+  **done: no prompt appears.** See Section 10.3.
+- **Determine whether `AVAudioFile` opens `.mov` and `.mp4`.** — **done: yes**, confirmed
+  against real `.mp4`/`.mov` fixtures with an actual encoded video track. No `AVAssetReader`
+  fork needed; video ships in M2 as originally hoped. See Section 7.2, Risk 9 (resolved).
 - Extract `audioTimeRange` from result runs; determine actual run granularity and record
-  it, since Section 7.5 depends on the answer
-- Confirm the system SQLite exposed through GRDB has FTS5 compiled in
-- Time a 30 minute file end to end for a throughput baseline
+  it — **done: word-level**, confirmed against the SDK's actual attribute type and covered
+  by unit tests (`Tests/audiosearchTests/ExtractRunsTests.swift`). See Section 7.5.
+- Confirm the system SQLite exposed through GRDB has FTS5 compiled in — **done: yes.**
+  GRDB's own manifest unconditionally sets `SQLITE_ENABLE_FTS5`; verified end to end
+  against the Section 6 schema (create table, insert, `MATCH` query). Risk 3 resolved,
+  bundled-SQLite fallback not needed.
+- Time a 30 minute file end to end for a throughput baseline — **done: ~39x real time**
+  (36 minutes of synthesized audio transcribed in 55s, release build, this machine).
 - Transcribe a sample representative of the real corpus and assess accuracy on proper
-  nouns and domain jargon, per Risk 6
-- Record one set of `RawRun` output as the first segmentation fixture
+  nouns and domain jargon, per Risk 6 — **not done.** Needs a real audio sample from the
+  actual corpus; synthesized `say` fixtures can't stand in for this since they're
+  generated from clean text rather than real speech. Blocking on a sample file.
+- Record one set of `RawRun` output as the first segmentation fixture — **done.**
+  `Tests/Fixtures/runs/known-01.json` and `known-02.json` committed.
 
-If FTS5 is absent from system SQLite, substitute a GRDB configuration with bundled SQLite
-before M1.
+Spike code lives in `Sources/audiosearch/main.swift` (throwaway, to be replaced when M1
+begins) and `Tests/audiosearchTests/ExtractRunsTests.swift`; audio fixtures are in
+`Tests/Fixtures/` (not committed as binary assets beyond what's needed — see Section 13.1).
 
 ### M1: Skeleton, schema, search (no transcription)
 
@@ -926,15 +949,15 @@ M1 through M4 constitute the working tool, at roughly 900 lines of Swift.
 
 | # | Risk | Mitigation |
 | --- | --- | --- |
-| 1 | Speech authorization required from a bundle-less CLI | Resolved in M0; fallback is an embedded `__TEXT,__info_plist` section, already wired into the manifest |
+| 1 | Speech authorization required from a bundle-less CLI | **Resolved in M0.** No prompt appears; confirmed empirically against a real file. The embedded `__TEXT,__info_plist` section remains documented in the manifest as an untested fallback in case behavior differs on a future macOS point release |
 | 2 | Operating system update silently changes transcripts; the index cannot detect it reliably | Engine identity string (Section 6.2); mismatch reports as stale rather than triggering automatic retranscription; `export` preserves prior transcripts regardless |
-| 3 | System SQLite lacks FTS5 through GRDB | Verified in M0; fallback is a GRDB configuration with bundled SQLite, at the cost of binary size only |
-| 4 | Run granularity finer or coarser than assumed, invalidating Section 7.5 | Measured in M0 before `Segmenter.swift` is written |
+| 3 | System SQLite lacks FTS5 through GRDB | **Resolved in M0.** GRDB supports FTS5 out of the box (its manifest unconditionally sets `SQLITE_ENABLE_FTS5`); no trait, flag, or bundled-SQLite fallback needed |
+| 4 | Run granularity finer or coarser than assumed, invalidating Section 7.5 | **Resolved in M0.** Runs are word-level, confirmed against real transcription output and unit-tested against the SDK's actual attribute type |
 | 5 | Speech framework API churn across macOS 26.x point releases | All framework use isolated in `Transcriber.swift` and `AudioInput.swift`; integration tests against generated fixtures |
-| 6 | Accuracy shortfall on jargon, proper nouns, and callsigns, with no vocabulary lever | Measured against a representative sample in M0. If unacceptable, substitute a whisper-based transcription module supporting prompt conditioning; the substitution is confined to `Transcriber.swift`, `AudioInput.swift`, and `Segmenter.swift`, since Sections 6, 8, 9, 10, and 11 are engine independent |
+| 6 | Accuracy shortfall on jargon, proper nouns, and callsigns, with no vocabulary lever | **Not yet measured.** M0's other items are complete; this one needs a real corpus sample, which wasn't available during the spike. If unacceptable, substitute a whisper-based transcription module supporting prompt conditioning; the substitution is confined to `Transcriber.swift`, `AudioInput.swift`, and `Segmenter.swift`, since Sections 6, 8, 9, 10, and 11 are engine independent |
 | 7 | Asset download required on first run in an offline environment | `doctor` reports asset state explicitly; `index` fails fast with exit code 3 rather than mid-batch |
 | 8 | `.unsafeFlags` blocks future extraction of a library target | Revisit only if a library target becomes necessary; the plist section can move to a build script instead |
-| 9 | `AVAudioFile` does not open video containers, requiring a second `AVAssetReader` input path | Determined in M0. If confirmed, video extensions are removed from the M2 allowlist and the feature moves to M5. Audio-only remains fully functional |
+| 9 | `AVAudioFile` does not open video containers, requiring a second `AVAssetReader` input path | **Resolved in M0: did not occur.** `AVAudioFile` opens `.mov` and `.mp4` directly, including files with an actual encoded video track. Video extensions stay in the M2 allowlist as originally hoped; the `AVAssetReader` path is documented in Section 7.2 but unbuilt |
 | 10 | Swift 6 strict concurrency conflicts with non-`Sendable` framework types and GRDB's model | Tools version pinned at 5.10 for M0 through M4; migration is an M5 task with per-file upcoming feature flags |
 | 11 | Prune deletes rows for files on a temporarily unmounted volume | Volume mount state checked against `mountedVolumeURLs` (Section 11.3); unreachable rows excluded from the deletion set and reported separately; `--yes` required above a 10 percent threshold |
 | 12 | Long batch lost to database corruption | `export` provides a rebuildable artifact; `doctor --repair` handles FTS5 desync without retranscription |
