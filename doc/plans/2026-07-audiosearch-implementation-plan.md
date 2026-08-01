@@ -1,7 +1,8 @@
 Plan: Audiosearch Implementation
 ===============================================================================
 
-> Status: Underway — M0 spike complete (2026-07-30), one item pending. See Section 14.
+> Status: Underway — M0 spike complete (2026-07-30, one item pending); M1 complete
+> (2026-08-01). M2 next. See Section 14.
 
 Native macOS command line utility for transcribing and searching a local audio and video
 library. Replaces `audio-search.rb`, a Ruby script that shelled out to `ffmpeg` and
@@ -547,6 +548,14 @@ Sanitization is mandatory. FTS5 defines its own operator syntax, so bare `-`, `*
 behavior tokenizes the input and quotes each term; `--raw` is the escape hatch for users
 wanting FTS5 syntax directly.
 
+As built in M1: anything that is not a letter or a digit is a separator, so adversarial
+input degrades to fewer terms rather than to a syntax error. Apostrophes are kept inside
+words, so `don't` reaches the tokenizer and is split the same way the indexed text was.
+Input that leaves no tokens at all (`*`, `^`, the empty string) yields no query, which
+means zero matches and exit code 1 — the correct answer, not a usage error. `--prefix`
+with several terms prefixes each and `AND`s them. `--raw` is the only mode that can
+raise a syntax error, and that surfaces as exit code 2.
+
 Additional filters: `--path SUBSTR`, `--limit N`, `--context N` for adjacent segments
 around each hit, `--after` and `--before` on file mtime.
 
@@ -869,17 +878,47 @@ Spike code lives in `Sources/audiosearch/main.swift` (throwaway, to be replaced 
 begins) and `Tests/audiosearchTests/ExtractRunsTests.swift`; audio fixtures are in
 `Tests/Fixtures/` (not committed as binary assets beyond what's needed — see Section 13.1).
 
-### M1: Skeleton, schema, search (no transcription)
+### M1: Skeleton, schema, search (no transcription) — Complete 2026-08-01
 
-- `ArgumentParser` command tree, exit code taxonomy, stream discipline
+- `ArgumentParser` command tree, exit code taxonomy, stream discipline — **done.**
+  `main.swift`, `ExitCode.swift`, `Output.swift`.
 - Config resolution, schema creation, `schema_version` migration path, persisted
-  parameters in `meta`
-- Insert and query paths for files and segments
+  parameters in `meta` — **done.** `Config.swift`, `Database.swift`.
+- Insert and query paths for files and segments — **done.**
 - Complete search implementation: query translation, ranking, all three output formats
+  — **done.** `Search.swift`, `Output.swift`.
 
-Acceptance: synthetic segments inserted by a test fixture round trip correctly; all query
-modes return correct ranked results; snippet output renders; adversarial inputs do not
-error; no-match returns exit code 1; results appear on stdout with nothing else.
+Acceptance, all verified: synthetic segments inserted by a test fixture round trip
+correctly; all query modes return correct ranked results; snippet output renders;
+adversarial inputs do not error; no-match returns exit code 1; results appear on stdout
+with nothing else.
+
+Decided or discovered while building it:
+
+- **Package manifest.** The `.unsafeFlags` `__TEXT,__info_plist` linker section from
+  Section 5.2 was dropped rather than carried, since M0 proved it unnecessary (Risk 1).
+  This also resolves Risk 8 — the package stays consumable as a dependency.
+- **Entry point.** `AudioSearch.main()` is not used; `parseAsRoot()` is driven by hand
+  so the Section 10.1 exit codes hold on every path. ArgumentParser exits 64 (`EX_USAGE`)
+  on a parse failure, which is remapped to 2. Errors thrown from `validate()` must be
+  `ValidationError`, since ArgumentParser wraps anything else before it can be caught.
+- **Match count on stderr.** The `N matches` header in the Section 12.3 mockup is
+  context, not a result. It renders identically in a terminal but stays out of pipes.
+- **`--help` on stdout** is the one deliberate exception to Section 10.2.
+- **Path form differs by format.** Text output abbreviates `$HOME` to `~`; `tsv` and
+  `json` emit absolute paths, deviating from the Section 12.4 mockup. A `~` in a field
+  another program consumes is a path that no longer opens.
+- **Ordering.** Files are ordered by their best-ranked hit; segments within a file are
+  ordered chronologically, matching the Section 12.3 mockup.
+- **External-content FTS5 has no triggers**, per Section 6, so every delete must issue
+  an explicit `'delete'` command carrying the original text *before* the row leaves
+  `segments`. Deleting a `files` row and letting `ON DELETE CASCADE` do the work would
+  desynchronise the index permanently. `Store.deleteSegments` is the only correct path,
+  and two tests guard it.
+- **`index --set-root`** persists the library root to `meta`; `AUDIOSEARCH_ROOT`
+  overrides it per run (Section 15, decision 6).
+- The M0 spike's validated transcription core moved from `main.swift` into
+  `Transcriber.swift`, its planned home. M1 does not call it; M2 builds around it.
 
 ### M2: Transcription and indexing
 
@@ -924,10 +963,13 @@ M1 through M4 constitute the working tool, at roughly 900 lines of Swift.
 
 ## 15. Open decisions
 
-1. **Default query mode.** Phrase matching is least surprising. Affects muscle memory, so
-   decide before M1 ships.
-2. **Result grouping.** One row per matching segment, or segments grouped under a file
-   heading with the path printed once.
+1. **Default query mode.** **Resolved in M1: phrase.** Adjacent and in order, as the
+   least surprising default; `--any`, `--all`, `--near`, `--prefix` and `--raw` are the
+   explicit alternatives.
+2. **Result grouping.** **Resolved in M1: grouped under a file heading**, path printed
+   once, for the `text` format. `tsv` and `json` remain one self-contained record per
+   match, since grouping is a reading affordance and machine consumers want neither the
+   repetition nor the structure.
 3. **Segment bounds.** Defaults of 40 and 240 characters are starting points. Tune against
    a real corpus in M3 using `--verbose` measurements, since the values materially change
    phrase match recall.
@@ -939,8 +981,11 @@ M1 through M4 constitute the working tool, at roughly 900 lines of Swift.
    Spotlight and to any document management tool indexing the same tree. Writing into a
    single dedicated directory keyed by content hash, rather than beside the source audio,
    captures the benefit without the basename collisions of the Ruby script.
-6. **`index` with no path argument.** Current working directory, or a configured library
-   root. A configured root removes a class of accidental large scans.
+6. **`index` with no path argument.** **Resolved in M1: a configured library root**, set
+   by `index --set-root <dir>` and persisted to `meta`, overridable per run by
+   `$AUDIOSEARCH_ROOT`. Bare `index` with no root configured is a usage error naming the
+   command that fixes it. Defaulting to the working directory would have made one stray
+   invocation in `$HOME` start a multi-hour scan.
 7. **Empty-file retry policy.** `status='empty'` currently behaves like `'ok'` for
    staleness. Whether an engine change should retry empty files more eagerly than
    successful ones is unresolved.
@@ -956,7 +1001,7 @@ M1 through M4 constitute the working tool, at roughly 900 lines of Swift.
 | 5 | Speech framework API churn across macOS 26.x point releases | All framework use isolated in `Transcriber.swift` and `AudioInput.swift`; integration tests against generated fixtures |
 | 6 | Accuracy shortfall on jargon, proper nouns, and callsigns, with no vocabulary lever | **Not yet measured.** M0's other items are complete; this one needs a real corpus sample, which wasn't available during the spike. If unacceptable, substitute a whisper-based transcription module supporting prompt conditioning; the substitution is confined to `Transcriber.swift`, `AudioInput.swift`, and `Segmenter.swift`, since Sections 6, 8, 9, 10, and 11 are engine independent |
 | 7 | Asset download required on first run in an offline environment | `doctor` reports asset state explicitly; `index` fails fast with exit code 3 rather than mid-batch |
-| 8 | `.unsafeFlags` blocks future extraction of a library target | Revisit only if a library target becomes necessary; the plist section can move to a build script instead |
+| 8 | `.unsafeFlags` blocks future extraction of a library target | **Resolved in M1: did not occur.** The `__TEXT,__info_plist` linker section it existed to install was dropped from the manifest, since M0 proved no authorization prompt appears (Risk 1). The shipped manifest has no `.unsafeFlags` at all. Reinstate only if a macOS point release starts prompting, and prefer a build script over the flags if so |
 | 9 | `AVAudioFile` does not open video containers, requiring a second `AVAssetReader` input path | **Resolved in M0: did not occur.** `AVAudioFile` opens `.mov` and `.mp4` directly, including files with an actual encoded video track. Video extensions stay in the M2 allowlist as originally hoped; the `AVAssetReader` path is documented in Section 7.2 but unbuilt |
 | 10 | Swift 6 strict concurrency conflicts with non-`Sendable` framework types and GRDB's model | Tools version pinned at 5.10 for M0 through M4; migration is an M5 task with per-file upcoming feature flags |
 | 11 | Prune deletes rows for files on a temporarily unmounted volume | Volume mount state checked against `mountedVolumeURLs` (Section 11.3); unreachable rows excluded from the deletion set and reported separately; `--yes` required above a 10 percent threshold |

@@ -14,8 +14,10 @@ just an entry point.
 
 ## Status
 
-**Underway.** The M0 spike (throwaway code proving out the riskiest technical
-assumptions before any structural work) is complete, with one item still open:
+**Underway. Not usable yet** — nothing can put anything into the index until M2.
+
+The M0 spike (throwaway code proving out the riskiest technical assumptions before any
+structural work) is complete, with one item still open:
 
 - No Speech authorization prompt appears from a bare CLI binary
 - `AVAudioFile` opens `.mov`/`.mp4` directly — no `AVAssetReader` fallback needed
@@ -25,8 +27,16 @@ assumptions before any structural work) is complete, with one item still open:
 - Still open: accuracy on proper nouns/jargon, pending a representative real-world
   audio sample
 
-M1 (CLI skeleton, schema, search — no transcription yet) has not started. See plan
-Section 14 for the full milestone breakdown and Section 16 for tracked risks.
+M1 is complete: the command tree, exit code taxonomy and stream discipline; database
+location and library root resolution; the schema with its migration path; and the whole
+of search — query translation, BM25 ranking, snippets, and the `text`, `tsv` and `json`
+output formats.
+
+M2 is next, and is what makes the tool do anything: transcription, the directory walk,
+and indexing. Until then `index`, `prune`, `export` and `doctor` are stubs that exit
+telling you which milestone they arrive in.
+
+See plan Section 14 for the full milestone breakdown and Section 16 for tracked risks.
 
 ## Requirements
 
@@ -52,15 +62,51 @@ assets (plan Section 13.1). Segmentation fixtures recorded from real transcripti
 runs (`Tests/Fixtures/runs/*.json`) are committed, since they're small JSON and let
 segmentation logic be tested without live transcription (Section 13.2).
 
-## Running the M0 spike
+## Usage
 
-Structural code (CLI parsing, persistence, search) doesn't exist yet. The current
-`Sources/audiosearch/main.swift` is throwaway spike code that transcribes a single
-file and prints/records the result:
+```
+audiosearch index [PATHS...]    walk, transcribe and store          (M2)
+audiosearch search QUERY        ranked full-text search             built
+audiosearch status              index location, size, corpus stats  built
+audiosearch prune               drop rows whose files are gone      (M3)
+audiosearch export              JSONL dump for backup and recovery  (M4)
+audiosearch doctor              locale, assets, permissions, FTS5   (M2)
+```
+
+Search matches your words as a phrase by default — adjacent, in order. Other modes are
+explicit rather than folded into one fuzzy flag:
 
 ```bash
-swift run audiosearch path/to/file.aiff
+audiosearch search "software defined radio"
+audiosearch search --all corning glass museum     # all terms, any order
+audiosearch search --any antenna tuner            # either term
+audiosearch search --near 10 antenna tuner        # within ten tokens
+audiosearch search --prefix transcei              # prefix match
+audiosearch search --raw 'antenna NOT tuner'      # FTS5 syntax, untouched
 ```
+
+Plus `--path SUBSTR` to restrict to a subtree, `--limit N`, and `--format text|tsv|json`.
+
+Punctuation FTS5 would otherwise read as an operator (`-`, `*`, `:`, `^`, `"`) is
+matched literally, so a query pasted from anywhere returns results or nothing — never a
+syntax error.
+
+Results go to stdout; the match count, progress and diagnostics go to stderr. Search
+exits 1 when nothing matches, following `grep`, so pipes and `||` behave:
+
+```bash
+audiosearch search --format tsv "propagation forecast" | cut -f1,2
+audiosearch search --format json "propagation forecast" | jq -r '.[0].path'
+audiosearch search "nonexistent phrase" || echo "no hits"
+```
+
+The index lives at `~/Library/Application Support/audiosearch/index.db`, overridable
+with `--db` or `$AUDIOSEARCH_DB`. `audiosearch index --set-root <dir>` records a default
+library root so a bare `index` can't accidentally scan your home directory;
+`$AUDIOSEARCH_ROOT` overrides it for one run.
+
+Exit codes: `0` success, `1` no matches or partial indexing failure, `2` usage error,
+`3` environment error (missing index, missing assets, unsupported locale).
 
 ## License
 

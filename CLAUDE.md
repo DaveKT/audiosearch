@@ -4,27 +4,35 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-The M0 spike (plan Section 14) is complete except one item pending a real audio
-sample (accuracy on jargon/proper nouns, Risk 6). The package builds and runs:
+M0 (spike) is complete except one item pending a real audio sample (accuracy on
+jargon/proper nouns, Risk 6). **M1 (skeleton, schema, search) is complete.** M2
+(transcription and indexing) is next.
 
-- `Package.swift` — a minimal M0 scaffold: an executable target only, no
-  `ArgumentParser`/GRDB dependencies yet. This is deliberately smaller than the target
-  manifest in plan Section 5.2 — widen it to that shape when M1 begins.
-- `Sources/audiosearch/main.swift` — throwaway spike code (asset installation,
-  transcription, run extraction). Expect this to be deleted/rewritten once M1 starts;
-  don't build on top of it.
-- `Tests/audiosearchTests/ExtractRunsTests.swift` — unit tests for `extractRuns`
-  against the SDK's real `AttributeScopes.SpeechAttributes.TimeRangeAttribute`.
+- `Package.swift` — the Section 5.2 manifest, with one deliberate difference: no
+  `.unsafeFlags` `__TEXT,__info_plist` linker section, since M0 proved no Speech
+  authorization prompt appears (Risk 1). That also resolves Risk 8. Don't add it back
+  without evidence that a macOS release started prompting.
+- `Sources/audiosearch/` — `main.swift` (command tree + hand-rolled entry point),
+  `ExitCode.swift`, `Config.swift`, `Database.swift`, `Search.swift`, `Output.swift`,
+  and `Transcriber.swift`. The last holds the M0 spike's validated transcription core
+  (run extraction, asset installation, the load-bearing collector-before-analyze
+  ordering), moved into its planned home. **Nothing calls it yet** — M2 builds the
+  real indexing API around it.
+- `index`, `prune`, `export` and `doctor` are stubs that exit 2 naming the milestone
+  they land in. `index --set-root` is live, because config resolution was M1's job.
+- `Tests/audiosearchTests/` — `ExtractRunsTests` (M0), plus `ConfigTests`,
+  `StoreTests`, `SearchTests`, `OutputTests`, `QueryTranslationTests` and the
+  `TestStore` harness. 49 tests, all passing, no live transcription in any of them.
 - `Tests/Fixtures/` — `say`-generated audio (`known-01.aiff`, `known-02.aiff`,
   `known-02.mp4`/`.mov`, a ~36 min `long-30min.aiff` used for the throughput
   baseline) and `Tests/Fixtures/runs/*.json` recorded `RawRun` fixtures for future
   `Segmenter` tests (plan Section 13.2).
 
 The plan document remains authoritative — read it before changing course on
-architecture, and check it for "resolved in M0" / "confirmed in M0" notes before
-assuming something is still an open question. Follow the milestone order (M0 → M1 →
-M2 → M3 → M4 → M5) rather than building out of order; M1 (schema, CLI, search) has
-not started yet.
+architecture, and check it for "resolved in M0" / "resolved in M1" / "confirmed in
+M0" notes before assuming something is still an open question. Plan Section 15's
+decisions 1, 2 and 6 were resolved while building M1 and are recorded there. Follow
+the milestone order (M0 → M1 → M2 → M3 → M4 → M5) rather than building out of order.
 
 The repo is public at `https://github.com/DaveKT/audiosearch` (`main` branch). A
 top-level `README.md` is the human-facing entry point (status summary, build/test
@@ -86,7 +94,20 @@ Key design decisions worth knowing before touching related code:
   files before removing rows (Section 11.3).
 - Stream discipline is load-bearing: stdout carries only `search`/`export` output;
   everything else (progress, warnings, `status`, `doctor`) goes to stderr (Section
-  10.2). Downstream piping (`--format tsv`, `jq`) depends on this.
+  10.2). Downstream piping (`--format tsv`, `jq`) depends on this. Two consequences
+  that look like bugs but aren't: the `N matches` header goes to stderr (it's context,
+  not a result), and `--help` goes to stdout (the one deliberate exception).
+- **The FTS5 index has no triggers.** `segments_fts` is external-content, populated by
+  hand inside the same transaction as the segment insert. Every deletion must issue
+  `INSERT INTO segments_fts(segments_fts, rowid, text) VALUES('delete', ?, ?)` with the
+  *original* text, before the row leaves `segments`. Deleting a `files` row and letting
+  `ON DELETE CASCADE` do the work desynchronises the index permanently — go through
+  `Store.replaceFile` / `Store.deleteFile`, never raw SQL.
+- **Exit codes are hand-rolled on purpose.** `main.swift` drives `parseAsRoot()` itself
+  rather than calling `AudioSearch.main()`, because ArgumentParser exits 64 on a parse
+  error where the plan specifies 2. Errors thrown from a command's `validate()` must be
+  ArgumentParser's `ValidationError` — it wraps anything else before the entry point's
+  handler can see it, and the exit code comes out wrong.
 
 ## Build/test
 
@@ -94,8 +115,15 @@ Key design decisions worth knowing before touching related code:
 swift build                       # debug
 swift build -c release            # release; ~39x real-time transcription measured this way
 swift test                        # runs Tests/audiosearchTests
-swift run audiosearch <path>       # M0 spike: transcribes one file, prints runs, writes <path>.runs.json
+swift run audiosearch --help      # command tree
+swift run audiosearch search "some phrase"   # needs an index; none exists until M2
 ```
+
+There is no way to populate an index from the CLI until M2 lands. To exercise `search`
+or `status` by hand, create the database with `audiosearch index --db <path> --set-root
+<dir>`, then seed `files`, `segments` and `segments_fts` with `sqlite3` — remembering
+that `segments_fts` is populated explicitly (`INSERT INTO segments_fts(rowid, text)
+SELECT id, text FROM segments;`). Tests use the `TestStore` harness instead.
 
 Eventual install step, once M1+ exists (plan Section 10.4): `cp
 .build/release/audiosearch /usr/local/bin/`.
