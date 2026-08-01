@@ -838,6 +838,30 @@ Tests/Fixtures/runs/long-pauses.json
 Segment boundary logic is the most likely place for silent regressions, and this makes
 those tests fast and unambiguous.
 
+**Provenance, recorded 2026-08-01.** These three were derived from the real 2h15m sample
+used for the Section 14.1 accuracy work, selected by measuring inter-run gap statistics
+across the whole episode rather than by picking windows that looked interesting:
+
+| Fixture | Runs | Span | Mean gap | Max gap | Gaps > 800ms |
+| --- | --- | --- | --- | --- | --- |
+| `podcast-excerpt` | 220 | 95s | 120ms | 19080ms | 2 |
+| `rapid-speech` | 220 | 54s | 3ms | 300ms | 0 |
+| `long-pauses` | 220 | 80s | 48ms | 1500ms | 7 |
+
+`podcast-excerpt`'s 19-second maximum is real and deliberately kept: a segment must never
+span a gap like that, and no synthesized fixture would have produced one.
+
+**The text in them is not real, and must not be treated as if it were.** The source is
+private material and this repository is public, so the words were discarded and only the
+timing kept. Each character is replaced positionally from a fixed filler alphabet that
+runs continuously across word boundaries, so word identity is not preserved and no
+substitution cipher exists to invert. What *is* preserved is exactly what Section 7.5
+reads: run lengths in characters, sentence-terminating punctuation, whitespace, and every
+start and end timestamp. Fixtures therefore read as Latin-looking nonsense — that is
+correct, not corruption, and nothing should try to "repair" it. Regenerate with
+`scratch/accuracy-check/make-fixtures.py` if the source is available; otherwise treat
+them as opaque recorded data.
+
 ### 13.3 Other test surfaces
 
 - **Query sanitization.** Table-driven cases over adversarial inputs (`foo -bar "baz`,

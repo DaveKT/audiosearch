@@ -24,8 +24,14 @@ decision outstanding that could change what M2 builds — see "Risk 6 is settled
   `TestStore` harness. 49 tests, all passing, no live transcription in any of them.
 - `Tests/Fixtures/` — `say`-generated audio (`known-01.aiff`, `known-02.aiff`,
   `known-02.mp4`/`.mov`, a ~36 min `long-30min.aiff` used for the throughput
-  baseline) and `Tests/Fixtures/runs/*.json` recorded `RawRun` fixtures for future
-  `Segmenter` tests (plan Section 13.2).
+  baseline) and `Tests/Fixtures/runs/*.json` recorded `RawRun` fixtures for the
+  `Segmenter` tests M2 will write (plan Section 13.2).
+  - **`podcast-excerpt.json`, `rapid-speech.json` and `long-pauses.json` contain
+    deliberately meaningless text.** They carry real timing taken from a private audio
+    sample, with the words stripped because this repo is public (plan Section 13.2,
+    "Provenance"). The Latin-looking nonsense is the point — timing, run lengths and
+    sentence terminators are what `Segmenter` reads. Do not "fix" the text, and do not
+    assert on it in tests; assert on boundaries and timestamps.
 
 ### Risk 6 is settled (measured 2026-08-01, plan Section 14.1)
 
