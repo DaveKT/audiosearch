@@ -1,6 +1,31 @@
 import ArgumentParser
 import Foundation
 
+// MARK: - Async dispatch
+
+/// Async commands implement `execute()`, never `run()` directly.
+///
+/// `AsyncParsableCommand` inherits a *synchronous* `run()` from `ParsableCommand`,
+/// and its default implementation throws a help request. When the command is held
+/// as an existential — which it is, because `parseAsRoot()` returns
+/// `ParsableCommand` — overload resolution picks that synchronous witness over the
+/// async requirement, so `try await command.run()` prints the help screen and
+/// exits 0 instead of doing the work. That is not a theory: `doctor` did exactly
+/// this before the indirection below, and the only warning was "no 'async'
+/// operations occur within 'await' expression".
+///
+/// A uniquely named method has no overload set, so it cannot be resolved wrongly.
+/// Any new async subcommand must conform here rather than overriding `run()`.
+protocol AsyncCommand: AsyncParsableCommand {
+    mutating func execute() async throws
+}
+
+extension AsyncCommand {
+    mutating func run() async throws {
+        try await execute()
+    }
+}
+
 // MARK: - Shared options
 
 struct GlobalOptions: ParsableArguments {
@@ -142,7 +167,7 @@ struct SearchCommand: ParsableCommand {
 
 // MARK: - index
 
-struct Index: ParsableCommand {
+struct Index: AsyncCommand {
     static let configuration = CommandConfiguration(
         commandName: "index",
         abstract: "Transcribe and index audio and video files.",
@@ -152,6 +177,13 @@ struct Index: ParsableCommand {
             $\(Config.libraryRootEnvironmentKey). Requiring a configured root \
             rather than defaulting to the working directory removes a class of \
             accidental multi-hour scans.
+
+            Segmentation parameters and locale persist after first use, so a later \
+            run that omits them does not silently change how the corpus is indexed. \
+            Passing them explicitly overrides and rewrites the stored value.
+
+            A file whose contents are unchanged is not retranscribed. A file that \
+            previously failed is always retried.
             """
     )
 
@@ -163,7 +195,37 @@ struct Index: ParsableCommand {
     @Option(name: .long, help: ArgumentHelp("Persist PATH as the default library root, then exit.", valueName: "path"))
     var setRoot: String?
 
-    func run() throws {
+    @Option(name: .long, help: ArgumentHelp("BCP-47 locale to transcribe in.", valueName: "id"))
+    var locale: String?
+
+    @Option(name: .long, help: ArgumentHelp("Minimum characters before a sentence break splits a segment.", valueName: "n"))
+    var minSegment: Int?
+
+    @Option(name: .long, help: ArgumentHelp("Maximum characters in a segment.", valueName: "n"))
+    var maxSegment: Int?
+
+    @Option(name: .long, help: ArgumentHelp("Silence in milliseconds that forces a segment break.", valueName: "ms"))
+    var silenceGap: Int?
+
+    @Flag(name: .long, help: "Suppress progress output.")
+    var quiet = false
+
+    func validate() throws {
+        if let minSegment, minSegment < 0 {
+            throw ValidationError("--min-segment expects a non-negative count")
+        }
+        if let maxSegment, maxSegment < 1 {
+            throw ValidationError("--max-segment expects a positive count")
+        }
+        if let minSegment, let maxSegment, minSegment >= maxSegment {
+            throw ValidationError("--min-segment must be smaller than --max-segment")
+        }
+        if let silenceGap, silenceGap < 0 {
+            throw ValidationError("--silence-gap expects a non-negative duration")
+        }
+    }
+
+    func execute() async throws {
         let store = try global.openStore()
 
         if let setRoot {
@@ -180,12 +242,48 @@ struct Index: ParsableCommand {
         }
 
         let targets = try resolveTargets(store)
-        Streams.errLine("would index: \(targets.map(Config.abbreviatingHome).joined(separator: ", "))")
-        throw NotImplemented(command: "index", milestone: "M2")
+
+        // Explicit flags override the stored values and rewrite them, so the two
+        // never disagree (Section 6.1).
+        if let locale { try store.setMeta(Store.MetaKey.locale, locale) }
+        if let minSegment { try store.setMeta(Store.MetaKey.minSegment, String(minSegment)) }
+        if let maxSegment { try store.setMeta(Store.MetaKey.maxSegment, String(maxSegment)) }
+        if let silenceGap { try store.setMeta(Store.MetaKey.silenceGapMS, String(silenceGap)) }
+
+        let stored = try store.parameters()
+        let transcriber = Transcriber(localeIdentifier: stored.locale)
+        let indexer = Indexer(
+            store: store,
+            transcriber: transcriber,
+            parameters: SegmentationParameters(stored),
+            engine: Transcriber.engineIdentity(locale: transcriber.bcp47),
+            progress: ProgressReporter(quiet: quiet)
+        )
+
+        let outcome = try await indexer.run(roots: targets)
+        report(outcome)
+
+        // Exit 1 on partial failure, so a scripted run can tell the difference
+        // between "indexed everything" and "indexed most things" (Section 10.1).
+        if outcome.hadFailures { throw Exit.noResults }
     }
 
-    /// Resolved here rather than in M2 because path resolution is M1's job; the
-    /// walk and the transcription that consume it are not.
+    private func report(_ outcome: Indexer.Outcome) {
+        guard !quiet else { return }
+        var parts = ["\(outcome.transcribed) transcribed"]
+        if outcome.empty > 0 { parts.append("\(outcome.empty) empty") }
+        if outcome.skipped > 0 { parts.append("\(outcome.skipped) unchanged") }
+        if outcome.failed > 0 { parts.append("\(outcome.failed) failed") }
+        if outcome.unavailable > 0 { parts.append("\(outcome.unavailable) unavailable") }
+        if outcome.missing > 0 { parts.append("\(outcome.missing) not found") }
+
+        Streams.errLine("")
+        Streams.errLine(parts.joined(separator: ", ") + ".")
+        if outcome.failed > 0 {
+            Streams.errLine("Failed files are retried on the next run.")
+        }
+    }
+
     private func resolveTargets(_ store: Store) throws -> [String] {
         if !paths.isEmpty {
             return paths.map(Config.canonicalPath)
@@ -279,16 +377,117 @@ struct Export: ParsableCommand {
     }
 }
 
-struct Doctor: ParsableCommand {
+struct Doctor: AsyncCommand {
     static let configuration = CommandConfiguration(
         commandName: "doctor",
-        abstract: "Check locale support, assets, permissions, FTS5 and integrity."
+        abstract: "Check locale support, assets, permissions, FTS5 and integrity.",
+        discussion: """
+            Reports rather than guesses. An unreadable library root is reported as \
+            a permission problem, not as an empty corpus.
+            """
     )
 
     @OptionGroup var global: GlobalOptions
 
-    func run() throws {
-        throw NotImplemented(command: "doctor", milestone: "M2")
+    @Flag(name: .long, help: "Rebuild the search index if it has desynchronised.")
+    var repair = false
+
+    @Flag(name: .long, help: "Install speech assets if they are missing.")
+    var installAssets = false
+
+    func execute() async throws {
+        let databaseURL = try Config.databaseURL(explicit: global.db)
+        let exists = FileManager.default.fileExists(atPath: databaseURL.path)
+
+        Streams.errLine("Database:  \(Config.abbreviatingHome(databaseURL.path))"
+                      + (exists ? "" : " (not yet created)"))
+
+        // Opening creates and migrates, which is itself the check that the
+        // location is writable and that the schema applies.
+        let store: Store
+        do {
+            store = try Store.open(at: databaseURL)
+        } catch let error as AudiosearchError {
+            Streams.errLine("           unusable: \(error.message)")
+            throw error
+        }
+
+        let locale = try store.meta(Store.MetaKey.locale) ?? Store.Defaults.locale
+        let transcriber = Transcriber(localeIdentifier: locale)
+
+        var problems: [String] = []
+
+        // Assets.
+        let assets = await transcriber.assetState()
+        if !assets.supported {
+            Streams.errLine("Locale:    \(transcriber.bcp47) (NOT SUPPORTED on this system)")
+            problems.append("locale \(transcriber.bcp47) is not supported")
+        } else if !assets.installed {
+            Streams.errLine("Locale:    \(transcriber.bcp47) (supported, assets not installed)")
+            if installAssets {
+                Streams.errLine("           downloading ...")
+                try await transcriber.prepareAssets()
+                Streams.errLine("           done")
+            } else {
+                problems.append("speech assets are not installed "
+                              + "(run 'audiosearch doctor --install-assets')")
+            }
+        } else {
+            Streams.errLine("Locale:    \(transcriber.bcp47) (supported, assets installed"
+                          + (assets.reserved ? ", reserved)" : ", NOT reserved)"))
+            if !assets.reserved {
+                problems.append("speech assets could not be reserved")
+            }
+        }
+
+        // FTS5 and integrity.
+        let health = try Maintenance.check(store)
+        Streams.errLine("FTS5:      available")
+        Streams.errLine("Integrity: \(health.integrity)")
+        if !health.isIntact { problems.append("database integrity check failed") }
+
+        if health.isSynchronized {
+            Streams.errLine("Index:     \(health.segments) segments, in sync")
+        } else {
+            Streams.errLine("Index:     \(health.segments) segments, "
+                          + "\(health.ftsRows) indexed — OUT OF SYNC")
+            if repair {
+                Streams.errLine("           rebuilding ...")
+                try Maintenance.rebuild(store)
+                let after = try Maintenance.check(store)
+                Streams.errLine("           \(after.isSynchronized ? "repaired" : "still out of sync")")
+                if !after.isSynchronized { problems.append("search index could not be rebuilt") }
+            } else {
+                problems.append("search index is out of sync (run 'audiosearch doctor --repair')")
+            }
+        }
+
+        // Library root, and whether it can actually be read. Reporting EPERM is
+        // the whole point: "0 files found" for a root you lack permission to read
+        // is a lie (Section 10.3).
+        let root = Config.libraryRoot(stored: try store.meta(Store.MetaKey.libraryRoot))
+        if let root {
+            var isDirectory: ObjCBool = false
+            if !FileManager.default.fileExists(atPath: root, isDirectory: &isDirectory) {
+                Streams.errLine("Library:   \(Config.abbreviatingHome(root)) (MISSING)")
+                problems.append("library root does not exist")
+            } else if !FileManager.default.isReadableFile(atPath: root) {
+                Streams.errLine("Library:   \(Config.abbreviatingHome(root)) (NOT READABLE)")
+                problems.append("library root is not readable — grant your terminal "
+                              + "Full Disk Access, or move the library")
+            } else {
+                Streams.errLine("Library:   \(Config.abbreviatingHome(root))")
+            }
+        } else {
+            Streams.errLine("Library:   not configured "
+                          + "(set with 'audiosearch index --set-root', or pass paths)")
+        }
+
+        guard problems.isEmpty else {
+            Streams.errLine("")
+            for problem in problems { Streams.errLine("  problem: \(problem)") }
+            throw Exit.environment
+        }
     }
 }
 
@@ -300,7 +499,13 @@ struct Doctor: ParsableCommand {
 // deliberate exception to Section 10.2 — `--help | less` is universal.
 do {
     var command = try AudioSearch.parseAsRoot()
-    try command.run()
+    // `index` and `doctor` are async; `search` and `status` are not. Driving both
+    // by hand is the cost of owning the exit codes.
+    if var asyncCommand = command as? AsyncCommand {
+        try await asyncCommand.execute()
+    } else {
+        try command.run()
+    }
     exit(Exit.success.rawValue)
 } catch let error as AudiosearchError {
     Streams.errLine("audiosearch: \(error.message)")

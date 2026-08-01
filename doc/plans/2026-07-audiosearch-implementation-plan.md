@@ -1,8 +1,8 @@
 Plan: Audiosearch Implementation
 ===============================================================================
 
-> Status: Underway — M0 complete (2026-07-30; accuracy item closed 2026-08-01), M1
-> complete (2026-08-01). M2 next. Milestones run M0 through M7. See Section 14.
+> Status: Underway — M0, M1 and M2 complete (2026-08-01). The tool indexes and searches
+> end to end. M3 next. Milestones run M0 through M7. See Section 14.
 
 Native macOS command line utility for transcribing and searching a local audio and video
 library. Replaces `audio-search.rb`, a Ruby script that shelled out to `ffmpeg` and
@@ -337,8 +337,8 @@ func transcribe(url: URL, locale: Locale) async throws -> [RawRun] {
     let analyzer = SpeechAnalyzer(modules: [transcriber])
     let audioFile = try AVAudioFile(forReading: url)
 
-    // The result collector MUST be established before analyzeSequence is awaited,
-    // or results are dropped. See Tests/audiosearchTests/OrderingTests.swift.
+    // Collector established before analyzeSequence. See the correction below:
+    // this is defensive, not load-bearing, on the systems measured so far.
     async let collected: [RawRun] = {
         var runs: [RawRun] = []
         for try await result in transcriber.results where result.isFinal {
@@ -356,6 +356,26 @@ func transcribe(url: URL, locale: Locale) async throws -> [RawRun] {
     return try await collected
 }
 ```
+
+**Correction, measured 2026-08-01 (M2).** This section previously asserted that
+establishing the collector after `analyzeSequence` drops results and silently yields an
+empty transcript. **That is not true on macOS 27.0 / Xcode 26.6.** The two statements were
+actually swapped and the suite rerun: a 2.7-second fixture and a 36-minute file both
+transcribed completely, the latter producing 215 segments and the correct duration.
+`SpeechTranscriber.results` buffers rather than dropping.
+
+Two consequences, both recorded rather than quietly dropped:
+
+- The ordering **stays as written**. It matches Apple's sample pattern, costs nothing, and
+  result buffering is an undocumented implementation detail a point release may change.
+- The test Section 13.3 asks for **cannot exist**. A test asserting non-empty runs passes
+  with the ordering either way, so it would assert nothing while appearing to assert
+  something — worse than no test, because it would be trusted. Section 13.3 is corrected
+  accordingly.
+
+The general lesson is worth keeping: an assumption recorded as fact in this plan may never
+have been measured. This one was carried from M0 unverified. When a comment claims a
+failure mode, cause the failure before believing the guard against it works.
 
 ### 7.4 Run extraction
 
@@ -868,8 +888,19 @@ them as opaque recorded data.
   `a:b`, `*`, `^x`, empty string) asserting no error and correct FTS5 translation.
 - **Staleness gate.** Synthetic `files` rows exercising every branch: unchanged, touched
   only, content changed, engine changed, previously failed.
-- **Ordering.** An explicit test that the Section 7.3 collector-before-analyze ordering is
-  preserved, since inverting it silently returns empty transcripts.
+- **Ordering.** ~~An explicit test that the Section 7.3 collector-before-analyze ordering
+  is preserved, since inverting it silently returns empty transcripts.~~ **Withdrawn
+  2026-08-01.** The premise was measured and is false: `SpeechTranscriber.results` buffers,
+  so inverting the ordering changes nothing observable and no test can detect it. Such a
+  test would pass in both states while looking like a guard. What remains in
+  `TranscriptionTests` is the honest residue — that live transcription runs and returns
+  ordered word-level runs — plus a real regression test for the zero-frame hang below.
+- **Zero-frame input.** A file with a valid header and no audio frames hung the analyzer
+  indefinitely: `analyzeSequence` returns nil, `cancelAndFinishNow()` runs, and the results
+  stream never terminates, so awaiting the collector blocks with no error and no timeout.
+  Guarded in `Transcriber.transcribe` and covered by a time-limited test. Note this is
+  distinct from silence: two seconds of digital silence analyses normally and correctly
+  yields no speech.
 - **Prune classification.** Injected volume state asserting that unreachable rows are
   never in the deletion set.
 - **Round trip.** `export` followed by `index --import` into an empty database reproduces
@@ -1023,16 +1054,44 @@ Decided or discovered while building it:
 - The M0 spike's validated transcription core moved from `main.swift` into
   `Transcriber.swift`, its planned home. M1 does not call it; M2 builds around it.
 
-### M2: Transcription and indexing
+### M2: Transcription and indexing — Complete 2026-08-01
 
-- `Transcriber.swift`, `AudioInput.swift`, and `Segmenter.swift` per Section 7
-- Asset installation and `doctor`
-- `Walker.swift` with package, symlink, and iCloud guards
-- Serial per-file indexing with per-file transactions, duration capture
+- `Transcriber.swift`, `AudioInput.swift`, and `Segmenter.swift` per Section 7 — **done.**
+- Asset installation and `doctor` — **done**, including `--install-assets` and `--repair`.
+- `Walker.swift` with package, symlink, and iCloud guards — **done.**
+- Serial per-file indexing with per-file transactions, duration capture — **done.**
 
-Acceptance: end to end index and search over a real directory; filenames containing
-apostrophes, spaces, and non-ASCII characters index correctly; an application bundle in
-the tree is not descended into; a silent fixture yields `status='empty'`, not `'ok'`.
+Acceptance, all verified against a purpose-built tree: end to end index and search over a
+real directory; `Dave's recording.aiff`, `a file with spaces.aiff` and
+`café — señor's notes.aiff` all index and return from search; a `Fake.app` bundle, a
+hidden directory and a symlink loop are all skipped (0 rows); a silent fixture yields
+`status='empty'` with 0 segments, not `'ok'`. A deliberately corrupt `.m4a` is recorded
+`failed` with its decode error, the run exits 1, and the next run retries only that file.
+
+Findings that changed the plan:
+
+- **A zero-frame audio file hangs the analyzer indefinitely.** `analyzeSequence` returns
+  nil, `cancelAndFinishNow()` runs, and the results stream never terminates, so awaiting
+  the collector blocks with no error, no warning and no timeout — the first full-tree run
+  hung for ten minutes. Guarded in `Transcriber.transcribe`. Distinct from silence: two
+  seconds of framed digital silence analyses normally and correctly yields no speech.
+- **The Section 7.3 collector ordering is not load-bearing.** Measured and corrected in
+  place above.
+- **`AsyncParsableCommand` cannot be dispatched through an existential.** Its inherited
+  synchronous `run()` throws a help request and wins overload resolution, so `doctor`
+  printed help and exited 0 instead of running. Async subcommands now conform to a local
+  `AsyncCommand` protocol and implement `execute()`, which has no overload set.
+- **Three M3 items were pulled forward in minimal form**, each forced rather than chosen:
+  content hashing (`files.hash` is `NOT NULL`), a same-hash skip (otherwise every run
+  retranscribes the whole corpus), and failure isolation (otherwise one bad file aborts a
+  multi-hour batch). The real gate — `stat`-first `touchedOnly`, engine-staleness
+  reporting, `--reindex-stale` — remains M3's.
+
+**Gap for M3 to resolve.** Section 11.3 specifies prune safety in terms of a `volumeURL`
+"recorded at index time", but the Section 6 schema has no column for it, and M2 does not
+persist one. `Walker` already requests `volumeURLKey`. M3 needs a schema migration adding
+`files.volume` before `prune` can distinguish *deleted* from *unreachable*, which is the
+distinction the whole safety argument rests on.
 
 ### M3: Incremental behavior and robustness
 

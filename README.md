@@ -14,7 +14,8 @@ just an entry point.
 
 ## Status
 
-**Underway. Not usable yet** — nothing can put anything into the index until M2.
+**Underway, and usable.** As of M2 the tool indexes a directory and searches it end to
+end. It is not yet polished: see the milestone list below for what is still missing.
 
 The M0 spike (throwaway code proving out the riskiest technical assumptions before any
 structural work) is complete:
@@ -37,13 +38,16 @@ location and library root resolution; the schema with its migration path; and th
 of search — query translation, BM25 ranking, snippets, and the `text`, `tsv` and `json`
 output formats.
 
-M2 is next, and is what makes the tool do anything: transcription, the directory walk,
-and indexing. Until then `index`, `prune`, `export` and `doctor` are stubs that exit
-telling you which milestone they arrive in.
+M2 is complete: transcription, the directory walk with its bundle/symlink/iCloud guards,
+segmentation, and per-file indexing. `index`, `search`, `status` and `doctor` all work.
 
-The remaining milestones, in order: **M3** incremental indexing and robustness, **M4**
-durability (`export` / `--import`), **M5** polish, **M6** selectable transcription
-engines, **M7** a real user manual.
+The remaining milestones, in order: **M3** incremental indexing, `--dry-run`, interrupt
+handling and `prune`, **M4** durability (`export` / `--import`), **M5** polish, **M6**
+selectable transcription engines, **M7** a real user manual.
+
+Known rough edges until M3: progress reporting is per-file rather than a progress bar,
+`status` does not yet classify stale or missing files, and `prune` and `export` are stubs
+that exit telling you which milestone they arrive in.
 
 M6 and M7 sit at the end on purpose. Apple's on-device engine stays the default and the
 only engine until the tool is otherwise finished — M6 adds the ability to *choose* a
@@ -82,13 +86,26 @@ segmentation logic be tested without live transcription (Section 13.2).
 ## Usage
 
 ```
-audiosearch index [PATHS...]    walk, transcribe and store          (M2)
+audiosearch index [PATHS...]    walk, transcribe and store          built
 audiosearch search QUERY        ranked full-text search             built
 audiosearch status              index location, size, corpus stats  built
+audiosearch doctor              locale, assets, permissions, FTS5   built
 audiosearch prune               drop rows whose files are gone      (M3)
 audiosearch export              JSONL dump for backup and recovery  (M4)
-audiosearch doctor              locale, assets, permissions, FTS5   (M2)
 ```
+
+Getting started:
+
+```bash
+audiosearch doctor --install-assets      # check the system, download speech assets
+audiosearch index ~/Audio/Podcasts       # transcribe and index (roughly 50x real time)
+audiosearch search "propagation forecast"
+```
+
+Indexing is incremental: a file whose contents have not changed is not retranscribed, so
+re-running `index` over a large library is cheap. A file that failed is always retried.
+Renaming a file does not cause retranscription, because staleness is keyed on content,
+not on the filename.
 
 Search matches your words as a phrase by default — adjacent, in order. Other modes are
 explicit rather than folded into one fuzzy flag:

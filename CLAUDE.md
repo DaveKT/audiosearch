@@ -4,8 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-**M0 and M1 are both complete.** M2 (transcription and indexing) is next, with one
-decision outstanding that could change what M2 builds — see "Risk 6 is settled" below.
+**M0, M1 and M2 are complete.** The tool works end to end: it indexes a directory and
+searches it. M3 (staleness gate, `--dry-run`, `SIGINT`, progress bar, `status`
+classification, `prune`) is next.
 
 - `Package.swift` — the Section 5.2 manifest, with one deliberate difference: no
   `.unsafeFlags` `__TEXT,__info_plist` linker section, since M0 proved no Speech
@@ -13,19 +14,21 @@ decision outstanding that could change what M2 builds — see "Risk 6 is settled
   without evidence that a macOS release started prompting.
 - `Sources/audiosearch/` — `main.swift` (command tree + hand-rolled entry point),
   `ExitCode.swift`, `Config.swift`, `Database.swift`, `Search.swift`, `Output.swift`,
-  and `Transcriber.swift`. The last holds the M0 spike's validated transcription core
-  (run extraction, asset installation, the load-bearing collector-before-analyze
-  ordering), moved into its planned home. **Nothing calls it yet** — M2 builds the
-  real indexing API around it.
-- `index`, `prune`, `export` and `doctor` are stubs that exit 2 naming the milestone
-  they land in. `index --set-root` is live, because config resolution was M1's job.
-- `Tests/audiosearchTests/` — `ExtractRunsTests` (M0), plus `ConfigTests`,
-  `StoreTests`, `SearchTests`, `OutputTests`, `QueryTranslationTests` and the
-  `TestStore` harness. 49 tests, all passing, no live transcription in any of them.
+  `Hashing.swift`, `Segmenter.swift`, `AudioInput.swift`, `Transcriber.swift`,
+  `Walker.swift`, `Indexer.swift`, `Maintenance.swift`.
+- `index`, `search`, `status` and `doctor` are live. `prune` (M3) and `export` (M4)
+  are stubs that exit 2 naming their milestone.
+- **Three M3 items are already present in minimal form**, and `Indexer.swift` says
+  why at the top: content hashing (the `hash` column is `NOT NULL`), a same-hash skip
+  (without it every run retranscribes the corpus), and failure isolation (without it
+  one bad file aborts a multi-hour batch). M3 still owns the real gate — the
+  `stat`-first `touchedOnly` path, engine-staleness reporting and `--reindex-stale`.
+- `Tests/audiosearchTests/` — 90 tests across 12 suites, all passing in well under a
+  second. Only `TranscriptionTests` touches the Speech framework.
 - `Tests/Fixtures/` — `say`-generated audio (`known-01.aiff`, `known-02.aiff`,
   `known-02.mp4`/`.mov`, a ~36 min `long-30min.aiff` used for the throughput
   baseline) and `Tests/Fixtures/runs/*.json` recorded `RawRun` fixtures for the
-  `Segmenter` tests M2 will write (plan Section 13.2).
+  `Segmenter` tests (plan Section 13.2).
   - **`podcast-excerpt.json`, `rapid-speech.json` and `long-pauses.json` contain
     deliberately meaningless text.** They carry real timing taken from a private audio
     sample, with the words stripped because this repo is public (plan Section 13.2,
@@ -141,6 +144,22 @@ Key design decisions worth knowing before touching related code:
   error where the plan specifies 2. Errors thrown from a command's `validate()` must be
   ArgumentParser's `ValidationError` — it wraps anything else before the entry point's
   handler can see it, and the exit code comes out wrong.
+- **Async subcommands conform to `AsyncCommand` and implement `execute()`, never
+  `run()`.** `AsyncParsableCommand` inherits a *synchronous* `run()` whose default
+  implementation throws a help request, and on an existential that witness wins overload
+  resolution — so `try await command.run()` prints the help screen and exits 0 instead of
+  running. This is not hypothetical: `doctor` did exactly that, and the only clue was a
+  "no 'async' operations occur within 'await' expression" warning. ArgumentParser's own
+  `main()` carries the same hazard.
+- **A file with zero audio frames hangs the analyzer forever** — no error, no timeout,
+  just a process that never returns. `Transcriber.transcribe` guards on `file.length > 0`.
+  Distinct from silence: framed digital silence analyses fine and correctly yields no
+  speech. Keep the guard.
+- **The collector-before-analyze ordering is defensive, not load-bearing.** Plan Section
+  7.3 said inverting it silently empties transcripts; that was measured in M2 and is
+  false — `SpeechTranscriber.results` buffers, and a 36-minute file transcribed fine
+  inverted. Keep the ordering (it matches Apple's pattern and buffering is undocumented),
+  but don't write a test claiming to guard it: no such test can fail.
 
 ## Build/test
 
