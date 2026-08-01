@@ -44,6 +44,14 @@ expect_stdout_contains() {
   case "$OUT" in *"$2"*) ok "$1" ;; *) bad "$1 — stdout lacked '$2'" ;; esac
 }
 
+expect_stderr_contains() {
+  case "$ERR" in *"$2"*) ok "$1" ;; *) bad "$1 — stderr lacked '$2'" ;; esac
+}
+
+expect_stderr_lacks() {
+  case "$ERR" in *"$2"*) bad "$1 — stderr still contained '$2'" ;; *) ok "$1" ;; esac
+}
+
 echo "smoke: $BIN"
 "$BIN" --version >/dev/null
 
@@ -66,16 +74,36 @@ expect_code "unimplemented subcommand names its milestone" 2 "$CODE"
 
 echo
 echo "-- doctor and index setup --"
+# doctor's exit code is legitimately environment dependent: 0 when everything is
+# available, 3 when something is missing. A CI runner has no speech assets
+# installed, so 3 is the correct answer there and asserting 0 would be asserting
+# that CI has models. Both are accepted; what is NOT negotiable is that doctor
+# keeps stdout clean and says which case it is.
 run doctor --db "$DB"
-expect_code "doctor on a fresh database" 0 "$CODE"
+if [ "$CODE" = "0" ] || [ "$CODE" = "3" ]; then
+  ok "doctor ran and reported (exit $CODE)"
+  if [ "$CODE" = "3" ]; then
+    printf '        environment is incomplete, as expected on CI:\n'
+    printf '%s\n' "$ERR" | sed -n 's/^  problem: /          problem: /p'
+  fi
+else
+  bad "doctor exited $CODE, which is neither healthy (0) nor an environment problem (3)"
+fi
 expect_empty_stdout "doctor writes nothing to stdout"
+
 run index --db "$DB" --set-root "$WORK"
 expect_code "index --set-root" 0 "$CODE"
 run index --db "$DB" --min-segment 999 --max-segment 10 "$WORK"
 expect_code "contradictory segment bounds rejected" 2 "$CODE"
 
 # Seed transcripts directly, so the search contract can be tested without models.
-# segments_fts is external content with no triggers, so it is populated by hand.
+#
+# Note what is NOT written here: segments_fts. The system sqlite3 CLI does not
+# necessarily have FTS5 compiled in — the macos-26 runner's does not, and fails
+# with "no such module: fts5" — even though the tool itself is fine, because GRDB
+# bundles its own SQLite with FTS5 enabled (plan Risk 3). Touching only the plain
+# tables keeps this script working on either. Populating the search index is then
+# `doctor --repair`'s job, which conveniently exercises that path for real.
 sqlite3 "$DB" <<'SQL'
 INSERT INTO files(path,hash,size,mtime,duration,locale,engine,status,indexed_at)
 VALUES('/Audio/ep-207.mp3','h1',100,1,1878.4,'en-US','speech/ci/en-US/seg2','ok',1),
@@ -84,8 +112,13 @@ INSERT INTO segments(file_id,t0_ms,t1_ms,text) VALUES
  (1,872340,876100,'getting started with software defined radio is cheap'),
  (1,2467000,2470000,'the software defined radio on my desk'),
  (2,3775000,3778000,'a panel on software defined radio');
-INSERT INTO segments_fts(rowid,text) SELECT id,text FROM segments;
 SQL
+
+# Segments exist but are not indexed, which is exactly the desynchronised state.
+run doctor --db "$DB"
+expect_stderr_contains "doctor sees unindexed transcripts as out of sync" "OUT OF SYNC"
+run doctor --db "$DB" --repair
+expect_stderr_contains "doctor --repair rebuilds the search index" "repaired"
 
 echo
 echo "-- search results (exit 0) --"
@@ -140,11 +173,23 @@ expect_empty_stdout "status writes nothing to stdout"
 
 # Desynchronise the search index behind the tool's back, which the row-count
 # check this project used to rely on could not detect.
+#
+# Asserted on doctor's findings rather than its exit code, because a runner with
+# no speech assets makes doctor exit 3 for an unrelated reason. Exit codes alone
+# cannot distinguish "the search index is broken" from "no models installed".
 sqlite3 "$DB" "INSERT INTO segments(file_id,t0_ms,t1_ms,text) VALUES(1,0,1,'invisible orphan');"
+run search --db "$DB" "invisible orphan"
+expect_code "an unindexed transcript is genuinely unfindable" 1 "$CODE"
+
 run doctor --db "$DB"
-expect_code "doctor detects a desynchronised search index" 3 "$CODE"
+expect_stderr_contains "doctor detects a desynchronised search index" "OUT OF SYNC"
+
 run doctor --db "$DB" --repair
-expect_code "doctor --repair rebuilds it" 0 "$CODE"
+expect_stderr_contains "doctor --repair reports repairing it" "repaired"
+
+run doctor --db "$DB"
+expect_stderr_lacks "the index is no longer reported out of sync" "OUT OF SYNC"
+
 run search --db "$DB" "invisible orphan"
 expect_code "the repaired text is findable" 0 "$CODE"
 

@@ -140,6 +140,11 @@ Key design decisions worth knowing before touching related code:
   *original* text, before the row leaves `segments`. Deleting a `files` row and letting
   `ON DELETE CASCADE` do the work desynchronises the index permanently — go through
   `Store.replaceFile` / `Store.deleteFile`, never raw SQL.
+- **Don't assume the `sqlite3` CLI can touch `segments_fts`.** The system `sqlite3` on the
+  macos-26 CI runner has no FTS5 (`no such module: fts5`) even though the tool works fine
+  on the same machine, because GRDB bundles its own SQLite with FTS5 enabled. A local
+  machine may well have an FTS5-capable `sqlite3` and hide this. Seed only `files` and
+  `segments` by hand and let `doctor --repair` build the search index.
 - **Never check that index by comparing row counts.** Counting an external-content table
   reads through to its content table, so `COUNT(*) FROM segments_fts` always equals
   `COUNT(*) FROM segments` — a check that looks meaningful and cannot fail. It reported
@@ -195,6 +200,23 @@ design rests on. And check `$?` — `search` exits 1 on no matches by design, so
 "failed" command is often the correct answer.
 
 Install step (plan Section 10.4): `cp .build/release/audiosearch /usr/local/bin/`.
+
+### CI
+
+`.github/workflows/ci.yml` runs build, `swift test`, a release build and
+`Scripts/smoke.sh` on every push and pull request. The README carries its status badge.
+
+Two things about it are deliberate and shouldn't be "simplified":
+
+- **`runs-on: macos-26`, with Xcode 26.6 pinned.** Earlier runner images cannot compile
+  this at all — `SpeechAnalyzer` is absent from their SDKs. The pin means an image change
+  fails loudly rather than silently building against a different toolchain.
+- **`Scripts/smoke.sh` exists because CI has no speech assets.** The tests that drive the
+  analyzer self-skip on a runner, so a green badge resting only on `swift test` would be
+  largely resting on skips. The smoke script asserts the engine-independent contract —
+  the exit-code taxonomy and the stdout/stderr split — against the real binary, so the
+  badge means something. Run it locally before pushing anything that touches the CLI
+  surface, and add to it when you add a command or an exit path.
 
 Audio fixtures are generated, not committed as source — `say -o Tests/Fixtures/*.aiff
 "..."` produces deterministic audio with known expected transcripts (Section 13.1).
