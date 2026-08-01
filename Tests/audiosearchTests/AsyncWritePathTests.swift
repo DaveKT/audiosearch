@@ -56,7 +56,7 @@ struct AsyncWritePathTests {
         let counts = try harness.store.counts()
         #expect(counts.files == 25)
         #expect(counts.segments == 25)
-        #expect(counts.segments == counts.ftsRows)
+        #expect(try Maintenance.searchIndexIsConsistent(harness.store))
     }
 
     @Test("concurrent writers serialize rather than corrupting the index")
@@ -80,8 +80,10 @@ struct AsyncWritePathTests {
         #expect(counts.files == 12)
         #expect(counts.segments == 12)
         // The invariant that matters: no torn writes between segments and the
-        // external-content FTS index.
-        #expect(counts.segments == counts.ftsRows)
+        // external-content FTS index. Checked with FTS5's own content-comparing
+        // integrity-check, because counting segments_fts reads through to
+        // segments and can never disagree.
+        #expect(try Maintenance.searchIndexIsConsistent(store))
         #expect(try Search.run(store, query: ["software defined radio"],
                                options: Search.Options(mode: .phrase, pathFilter: nil, limit: 0)).count == 12)
     }

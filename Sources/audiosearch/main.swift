@@ -59,7 +59,7 @@ struct AudioSearch: ParsableCommand {
             Results go to stdout; progress, warnings and diagnostics go to stderr, \
             so search output pipes cleanly.
             """,
-        version: "0.1.0-m1",
+        version: "0.1.0-m2",
         subcommands: [Index.self, SearchCommand.self, Status.self, Prune.self, Export.self, Doctor.self],
         defaultSubcommand: nil
     )
@@ -336,10 +336,11 @@ struct Status: ParsableCommand {
         Streams.errLine("Segments:   \(counts.segments)")
         Streams.errLine("Audio:      \(Output.duration(seconds: counts.totalDuration))")
 
-        if counts.segments != counts.ftsRows {
+        if !(try Maintenance.searchIndexIsConsistent(store)) {
             Streams.errLine("")
-            Streams.errLine("Warning:    search index desynchronised "
-                          + "(\(counts.segments) segments, \(counts.ftsRows) indexed).")
+            Streams.errLine("Warning:    search index is out of sync with the stored "
+                          + "transcripts.")
+            Streams.errLine("            Run 'audiosearch doctor --repair'.")
         }
 
         // Stale, missing and unreachable classification needs the staleness gate
@@ -446,17 +447,17 @@ struct Doctor: AsyncCommand {
         Streams.errLine("Integrity: \(health.integrity)")
         if !health.isIntact { problems.append("database integrity check failed") }
 
-        if health.isSynchronized {
+        if health.searchIndexConsistent {
             Streams.errLine("Index:     \(health.segments) segments, in sync")
         } else {
-            Streams.errLine("Index:     \(health.segments) segments, "
-                          + "\(health.ftsRows) indexed — OUT OF SYNC")
+            Streams.errLine("Index:     \(health.segments) segments — OUT OF SYNC "
+                          + "(some transcripts are not searchable)")
             if repair {
                 Streams.errLine("           rebuilding ...")
                 try Maintenance.rebuild(store)
-                let after = try Maintenance.check(store)
-                Streams.errLine("           \(after.isSynchronized ? "repaired" : "still out of sync")")
-                if !after.isSynchronized { problems.append("search index could not be rebuilt") }
+                let repaired = try Maintenance.searchIndexIsConsistent(store)
+                Streams.errLine("           \(repaired ? "repaired" : "still out of sync")")
+                if !repaired { problems.append("search index could not be rebuilt") }
             } else {
                 problems.append("search index is out of sync (run 'audiosearch doctor --repair')")
             }

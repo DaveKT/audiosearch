@@ -84,8 +84,7 @@ struct StoreTests {
         #expect(try search(harness, "propagation forecast").isEmpty)
         #expect(try search(harness, "entirely different").count == 1)
 
-        let counts = try harness.store.counts()
-        #expect(counts.segments == counts.ftsRows)
+        #expect(try Maintenance.searchIndexIsConsistent(harness.store))
     }
 
     @Test("deleting a file removes its rows and its search index entries")
@@ -102,7 +101,7 @@ struct StoreTests {
         let counts = try harness.store.counts()
         #expect(counts.files == 1)
         #expect(counts.segments == 1)
-        #expect(counts.ftsRows == 1)
+        #expect(try Maintenance.searchIndexIsConsistent(harness.store))
     }
 
     @Test("deleting a path that was never indexed is a no-op")

@@ -23,7 +23,7 @@ classification, `prune`) is next.
   (without it every run retranscribes the corpus), and failure isolation (without it
   one bad file aborts a multi-hour batch). M3 still owns the real gate — the
   `stat`-first `touchedOnly` path, engine-staleness reporting and `--reindex-stale`.
-- `Tests/audiosearchTests/` — 90 tests across 12 suites, all passing in well under a
+- `Tests/audiosearchTests/` — 97 tests across 13 suites, all passing in well under a
   second. Only `TranscriptionTests` touches the Speech framework.
 - `Tests/Fixtures/` — `say`-generated audio (`known-01.aiff`, `known-02.aiff`,
   `known-02.mp4`/`.mov`, a ~36 min `long-30min.aiff` used for the throughput
@@ -90,14 +90,15 @@ Hard platform floor: macOS 26 on Apple silicon (Speech framework requirement). N
 custom vocabulary/prompt conditioning, no model pinning, no model selection — these
 are accepted constraints, not oversights (plan Section 2).
 
-## Planned architecture
+## Architecture
 
-Five subcommands share one SQLite database, canonical-path-keyed and independent of
+Six subcommands share one SQLite database, canonical-path-keyed and independent of
 invocation directory: `index [PATHS...]`, `search QUERY`, `status`, `prune`,
 `export`, `doctor`. See plan Section 5 for the full command tree and Section 5.1 for
-the intended file layout (`Transcriber.swift`, `AudioInput.swift`, `Segmenter.swift`,
-`Walker.swift`, `Indexer.swift`, `Search.swift`, `Database.swift`, etc.) — one file
-per concern, with framework-specific code isolated to `Transcriber.swift` and
+the file layout (`Transcriber.swift`, `AudioInput.swift`, `Segmenter.swift`,
+`Walker.swift`, `Indexer.swift`, `Search.swift`, `Database.swift`, etc.) — the source
+tree matches that layout exactly, one file per concern, with framework-specific code
+isolated to `Transcriber.swift` and
 `AudioInput.swift` so the transcription engine can be swapped later without touching
 schema, indexing, search, or CLI code (plan Risk 6). That isolation is what **M6**
 (selectable engines) cashes in — keep it intact even though nothing exercises it before
@@ -139,6 +140,14 @@ Key design decisions worth knowing before touching related code:
   *original* text, before the row leaves `segments`. Deleting a `files` row and letting
   `ON DELETE CASCADE` do the work desynchronises the index permanently — go through
   `Store.replaceFile` / `Store.deleteFile`, never raw SQL.
+- **Never check that index by comparing row counts.** Counting an external-content table
+  reads through to its content table, so `COUNT(*) FROM segments_fts` always equals
+  `COUNT(*) FROM segments` — a check that looks meaningful and cannot fail. It reported
+  "in sync" on a database whose text was unsearchable. FTS5's bare `integrity-check`
+  passes on it too. The only thing that works is
+  `INSERT INTO segments_fts(segments_fts, rank) VALUES('integrity-check', 1)`, wrapped as
+  `Maintenance.searchIndexIsConsistent`. `Store.Counts` intentionally has no FTS count
+  field so the vacuous version cannot come back.
 - **Exit codes are hand-rolled on purpose.** `main.swift` drives `parseAsRoot()` itself
   rather than calling `AudioSearch.main()`, because ArgumentParser exits 64 on a parse
   error where the plan specifies 2. Errors thrown from a command's `validate()` must be
@@ -165,26 +174,34 @@ Key design decisions worth knowing before touching related code:
 
 ```bash
 swift build                       # debug
-swift build -c release            # release; ~39x real-time transcription measured this way
-swift test                        # runs Tests/audiosearchTests
+swift build -c release            # release; ~50x real-time transcription measured this way
+swift test                        # 97 tests; only `transcription` touches Speech
 swift run audiosearch --help      # command tree
-swift run audiosearch search "some phrase"   # needs an index; none exists until M2
 ```
 
-There is no way to populate an index from the CLI until M2 lands. To exercise `search`
-or `status` by hand, create the database with `audiosearch index --db <path> --set-root
-<dir>`, then seed `files`, `segments` and `segments_fts` with `sqlite3` — remembering
-that `segments_fts` is populated explicitly (`INSERT INTO segments_fts(rowid, text)
-SELECT id, text FROM segments;`). Tests use the `TestStore` harness instead.
+Exercising it by hand against a scratch database, so you never touch the real index:
 
-Eventual install step, once M1+ exists (plan Section 10.4): `cp
-.build/release/audiosearch /usr/local/bin/`.
+```bash
+DB=/tmp/scratch.db
+.build/release/audiosearch doctor --db $DB
+.build/release/audiosearch index  --db $DB Tests/Fixtures
+.build/release/audiosearch search --db $DB "quick brown fox"
+.build/release/audiosearch status --db $DB
+```
+
+Two habits worth keeping when testing by hand. Redirect stderr (`2>/dev/null`) to see
+exactly what a pipe would receive, since that is the stream discipline the whole
+design rests on. And check `$?` — `search` exits 1 on no matches by design, so a
+"failed" command is often the correct answer.
+
+Install step (plan Section 10.4): `cp .build/release/audiosearch /usr/local/bin/`.
 
 Audio fixtures are generated, not committed as source — `say -o Tests/Fixtures/*.aiff
 "..."` produces deterministic audio with known expected transcripts (Section 13.1).
+`TranscriptionTests` regenerates what it needs, so a fresh clone can run the suite.
 `Tests/Fixtures/runs/*.json` recorded `RawRun` fixtures **are** committed, since
-they're small JSON and let `Segmenter` be tested in isolation without live
-transcription once it's written (Section 13.2).
+they're small JSON and let `Segmenter` be tested without live transcription
+(Section 13.2) — see the warning above about their deliberately meaningless text.
 
 ## Writing plans
 

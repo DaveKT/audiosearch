@@ -339,11 +339,16 @@ struct Store {
     }
 
     /// Corpus counts for `status`.
+    ///
+    /// Deliberately carries no `segments_fts` row count. `segments_fts` is an
+    /// external content table, so counting it reads through to `segments` and the
+    /// two are equal by construction — a comparison that looks like a consistency
+    /// check while being incapable of failing. Use
+    /// `Maintenance.searchIndexIsConsistent` instead.
     struct Counts: Equatable {
         var files: Int
         var byStatus: [FileStatus: Int]
         var segments: Int
-        var ftsRows: Int
         var totalDuration: Double
     }
 
@@ -359,7 +364,6 @@ struct Store {
                 files: try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM files") ?? 0,
                 byStatus: byStatus,
                 segments: try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM segments") ?? 0,
-                ftsRows: try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM segments_fts") ?? 0,
                 totalDuration: try Double.fetchOne(db, sql: "SELECT COALESCE(SUM(duration), 0) FROM files") ?? 0
             )
         }

@@ -675,8 +675,31 @@ INSERT INTO segments_fts(segments_fts) VALUES('optimize');   -- after large batc
 INSERT INTO segments_fts(segments_fts) VALUES('rebuild');    -- doctor --repair
 ```
 
-`doctor` runs `PRAGMA integrity_check` and compares `COUNT(*)` between `segments` and
-`segments_fts`, reporting a mismatch and recommending `--repair`.
+**Correction, measured 2026-08-01 (M2).** This section previously said `doctor` should
+compare `COUNT(*)` between `segments` and `segments_fts`. **That comparison cannot ever
+fail.** `segments_fts` is an *external content* table, so counting it reads through to
+`segments`; the two are equal by construction no matter how far the index has drifted.
+Verified by inserting a segment without its FTS row: `doctor` cheerfully reported
+"2 segments, 2 indexed, in sync" while the text was completely unsearchable.
+
+FTS5's own `integrity-check` is also not enough by default — the bare form validates only
+that the index is internally well formed, and it passed on the same broken database. The
+argument must be set explicitly so it compares the index against the content table:
+
+```sql
+INSERT INTO segments_fts(segments_fts, rank) VALUES('integrity-check', 1);
+```
+
+This raises `SQLITE_CORRUPT_VTAB` when the index and the transcripts disagree, and is what
+`Maintenance.searchIndexIsConsistent` uses. `doctor` runs it alongside
+`PRAGMA integrity_check` and recommends `--repair`; `status` surfaces the same warning.
+`Store.Counts` deliberately no longer carries an FTS row count, so the vacuous comparison
+cannot be reintroduced by accident, and `MaintenanceTests` pins all of this down —
+including an explicit test that row counts agree on a broken index.
+
+The general lesson matches Section 7.3's: a check that cannot fail is worse than no check,
+because it gets believed. Both were found by deliberately breaking the thing being
+checked, which is the only way to know a guard works.
 
 ### 11.3 Prune safety
 

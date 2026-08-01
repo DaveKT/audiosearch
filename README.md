@@ -139,6 +139,17 @@ with `--db` or `$AUDIOSEARCH_DB`. `audiosearch index --set-root <dir>` records a
 library root so a bare `index` can't accidentally scan your home directory;
 `$AUDIOSEARCH_ROOT` overrides it for one run.
 
+Segment size is the main search-quality dial: short segments give precise timestamps but
+break phrase matches across rows, long ones do the reverse. Tune with
+`index --min-segment`, `--max-segment` and `--silence-gap`, and set the transcription
+language with `--locale`. All four persist, so a later run that omits them doesn't
+silently change how your corpus is indexed.
+
+If something looks wrong, `audiosearch doctor` checks locale support, speech assets,
+database integrity and whether the search index has drifted out of sync with the stored
+transcripts; `doctor --repair` rebuilds the search index from those transcripts, which
+never re-transcribes anything.
+
 Exit codes: `0` success, `1` no matches or partial indexing failure, `2` usage error,
 `3` environment error (missing index, missing assets, unsupported locale).
 
