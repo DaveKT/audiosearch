@@ -109,16 +109,29 @@ Sources/audiosearch/
   Hashing.swift          streaming content hash
   ExitCode.swift         exit code taxonomy
 Tests/audiosearchTests/
-  Fixtures/              generated at test setup, not committed
-Resources/Info.plist     embedded via linker section, see 10.3
+Tests/Fixtures/          audio generated at test setup, not committed
+  runs/                  recorded RawRun fixtures, committed — see 13.2
+Scripts/smoke.sh         CLI contract checks against the built binary, see 13.4
+.github/workflows/ci.yml build, test and smoke on macos-26, see 13.4
 ```
+
+As built, `Sources/audiosearch/` matches this list exactly — no extra files, none
+missing.
+
+`Resources/Info.plist` was in this layout and **is not in the shipped tree.** It existed
+only to carry the `__TEXT,__info_plist` linker section for a speech authorization prompt
+that M0 proved never appears (Risk 1), so M1 dropped both it and the `.unsafeFlags` that
+installed it, which also resolved Risk 8. See 5.2.
 
 ### 5.2 Package manifest
 
-This is the target manifest for M1 onward. The M0 spike checked in at
-`Package.swift` is deliberately smaller — no `ArgumentParser`/GRDB dependencies, no
-linker section — since M0 excludes persistence and CLI parsing by design (Section 14).
-Widen it to the shape below when M1 begins.
+This was the target manifest for M1 onward, and M1 adopted it **with one deliberate
+difference: the `linkerSettings` block below was never added.** It exists only to embed
+an `Info.plist` for a speech authorization prompt that M0 proved never appears (Risk 1),
+so shipping it would have bought nothing while blocking the package from ever being used
+as a dependency (Risk 8). The block is left here as a record of what was considered and
+why it was dropped — **do not copy it into `Package.swift`.** Reinstate it only if a
+future macOS release starts prompting, and prefer a build script to `.unsafeFlags` if so.
 
 ```swift
 // swift-tools-version: 5.10
@@ -166,8 +179,8 @@ Notes:
 - `.macOS("26.0")` string form avoids depending on whether the toolchain exposes a
   `.v26` enum case.
 - `.unsafeFlags` blocks the package from being consumed as a dependency by others. That
-  is acceptable for a leaf executable but should be revisited if the core is ever split
-  into a library target. See Risk 8.
+  was acceptable for a leaf executable, but since the flags turned out to be unnecessary
+  the shipped manifest omits them entirely and the constraint does not apply. See Risk 8.
 - Only two external dependencies, both statically linked by SPM, so the single binary
   property holds. Everything else comes from the SDK: `Speech`, `AVFoundation`,
   `CoreMedia`, `CryptoKit`, `Foundation`.
@@ -318,8 +331,10 @@ corpus doesn't open via `AVAudioFile`, the fallback is `AVURLAsset` plus `AVAsse
 over the first audio track, converted to the format returned by
 `SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith:)`, fed through an
 `AsyncStream<AnalyzerInput>` to `analyzer.start(inputSequence:)`. Duration would come from
-`try await asset.load(.duration)`. Left documented here in case it's needed, but M2 should
-not build it preemptively.
+`try await asset.load(.duration)`. Left documented here in case it's needed. **M2 did not
+build it**, and nothing has required it: `.aiff`, `.wav`, `.mp3`, `.mp4` and `.mov` all
+open through `AVAudioFile`, including a 2h15m stereo MP3 and containers with a real
+encoded video track. Add this path only when a real file in the corpus fails to open.
 
 ### 7.3 Analysis
 
@@ -623,8 +638,9 @@ authorization prompt. `SpeechAnalyzer` is on-device only, and file-based transcr
 from a bare CLI binary (no app bundle) was confirmed not to require the prompt:
 `SFSpeechRecognizer.authorizationStatus()` stayed `.notDetermined` for the whole run, and
 analysis still succeeded. The `__TEXT,__info_plist` linker-section fallback in Section 5.2
-was therefore not needed on this system (Xcode 26.6, macOS 27.0) and can be dropped from
-the manifest unless a future macOS point release changes this behavior.
+was therefore not needed on this system (Xcode 26.6, macOS 27.0) and **was dropped: M1
+shipped the manifest without it**, and every M2 indexing run since has confirmed no prompt
+appears. Reinstate only if a future macOS release changes this behaviour.
 
 **File access.** Reading from `~/Documents`, `~/Desktop`, or `~/Downloads` triggers TCC
 against the calling process, meaning the terminal application rather than `audiosearch`.
@@ -642,6 +658,9 @@ cp .build/release/audiosearch /usr/local/bin/
 No external build toolchain, no model download, no universal binary step. The Swift
 runtime ships in macOS, so the binary is self-contained. Xcode 26 or the matching command
 line tools are required to build.
+
+Both build configurations, the test suite and the CLI contract checks run in CI on every
+push; see Section 13.4 for what that does and does not verify.
 
 A Homebrew tap formula is the natural distribution step if the tool is ever shared.
 Locally built binaries require no signing; downloaded binaries trigger Gatekeeper
@@ -928,6 +947,47 @@ them as opaque recorded data.
   never in the deletion set.
 - **Round trip.** `export` followed by `index --import` into an empty database reproduces
   identical segment content.
+
+### 13.4 Continuous integration and the CLI contract
+
+Added 2026-08-01, after M2 made the tool usable. `.github/workflows/ci.yml` runs on every
+push and pull request: build (debug), `swift test`, build (release), then
+`Scripts/smoke.sh`. The README carries the status badge.
+
+**The runner must be `macos-26`.** `SpeechAnalyzer` is absent from the macOS 15 SDK, so
+earlier images cannot compile this project at all — this is the Section 2 platform floor
+showing up in infrastructure. Xcode 26.6 is pinned rather than left to the image default,
+so that an image bump fails loudly instead of silently building against another toolchain.
+
+**A hosted runner cannot transcribe anything.** It reports `en-US (NOT SUPPORTED on this
+system)` — not merely uninstalled assets, but no Speech locales at all. Consequences,
+each of which had to be discovered by running it rather than reasoning about it:
+
+- `doctor` exits 3 on CI, correctly. Any check asserting it exits 0 is really asserting
+  that the runner has speech models.
+- The tests in `TranscriptionTests` that drive the analyzer return early there.
+- Therefore a badge resting only on `swift test` would rest partly on skips.
+
+`Scripts/smoke.sh` exists to give CI something that genuinely passes or fails: 35
+assertions over the exit code taxonomy (10.1) and stream discipline (10.2), run against
+the built binary, using no speech at all. It covers what unit tests structurally cannot —
+that usage errors exit 2 rather than ArgumentParser's 64, that `search` exits 1 on no
+matches and 3 with no index, that results reach stdout while the match count does not,
+that `tsv` stays tab separated with absolute paths, that adversarial queries never error,
+and that `doctor` detects and repairs a desynchronised search index. Extend it whenever a
+command or an exit path is added, and run it locally before pushing CLI changes.
+
+Two constraints on anything added to it, both learned the hard way on the first red run:
+
+- **Do not assume the `sqlite3` CLI has FTS5.** The runner's does not (Risk 3). Seed only
+  `files` and `segments`, and let `doctor --repair` build the search index.
+- **Do not assert on `doctor`'s exit code for a specific defect.** An exit code cannot
+  distinguish "the search index is broken" from "no speech models installed", and on CI
+  both are true simultaneously. Assert on what `doctor` reports.
+
+**What CI does not cover, and cannot:** transcription accuracy and throughput. No hosted
+runner can measure either. Those numbers come from a local machine and live in Section
+14.1. The badge should never be read as covering them.
 
 ## 14. Milestones
 
@@ -1257,7 +1317,7 @@ find something in it without reading the plan document or the source.
 
 | # | Risk | Mitigation |
 | --- | --- | --- |
-| 1 | Speech authorization required from a bundle-less CLI | **Resolved in M0.** No prompt appears; confirmed empirically against a real file. The embedded `__TEXT,__info_plist` section remains documented in the manifest as an untested fallback in case behavior differs on a future macOS point release |
+| 1 | Speech authorization required from a bundle-less CLI | **Resolved in M0.** No prompt appears; confirmed empirically against a real file, and since M2 confirmed again on every indexing run. The `__TEXT,__info_plist` linker section was therefore **never added to the shipped manifest** — it survives only as a documented, untested fallback in Section 5.2 in case behaviour changes on a future macOS release. Do not copy it in speculatively; that would reintroduce Risk 8 for no benefit |
 | 2 | Operating system update silently changes transcripts; the index cannot detect it reliably | Engine identity string (Section 6.2); mismatch reports as stale rather than triggering automatic retranscription; `export` preserves prior transcripts regardless |
 | 3 | System SQLite lacks FTS5 through GRDB | **Resolved in M0.** GRDB supports FTS5 out of the box (its manifest unconditionally sets `SQLITE_ENABLE_FTS5`); no trait, flag, or bundled-SQLite fallback needed. **Reinforced 2026-08-01 (CI):** the `macos-26` runner's *system* `sqlite3` CLI has no FTS5 at all and fails with `no such module: fts5`, while the tool built on the same machine works perfectly. The dependency on GRDB rather than the system library is therefore load-bearing, not a convenience. Consequence for tooling and docs: never assume the `sqlite3` shell can touch `segments_fts` — a local machine may have an FTS5-capable build while CI does not. `Scripts/smoke.sh` seeds only `files` and `segments` and lets `doctor --repair` populate the search index |
 | 4 | Run granularity finer or coarser than assumed, invalidating Section 7.5 | **Resolved in M0.** Runs are word-level, confirmed against real transcription output and unit-tested against the SDK's actual attribute type |
