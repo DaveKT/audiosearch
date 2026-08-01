@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build and test
+    # The hard platform floor is macOS 26 on Apple silicon: SpeechAnalyzer does
+    # not exist in earlier SDKs, so macos-15 cannot even compile this. `macos-26`
+    # is the arm64 image (plan Section 2).
+    runs-on: macos-26
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # Pinned rather than left to the image default. If a future image drops
+      # this Xcode the job fails loudly, which is the correct outcome for a
+      # project with a hard toolchain requirement — better than silently
+      # building against something else.
+      - name: Select Xcode 26.6
+        run: sudo xcode-select -switch /Applications/Xcode_26.6.app
+
+      - name: Toolchain versions
+        run: |
+          sw_vers
+          swift --version
+          xcodebuild -version
+
+      # Only the dependency cache, not .build. Caching build products across
+      # runs risks stale incremental state for a saving of a few seconds.
+      - name: Cache SwiftPM dependencies
+        uses: actions/cache@v6
+        with:
+          path: ~/Library/Caches/org.swift.swiftpm
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-
+
+      - name: Build (debug)
+        run: swift build
+
+      - name: Test
+        run: swift test
+
+      - name: Build (release)
+        run: swift build -c release
+
+      # Informational. Speech assets are very unlikely to be installed on a
+      # runner, and this prints exactly what the environment offers so that the
+      # skip below is visible rather than assumed. Never fails the build.
+      - name: Speech environment (informational)
+        continue-on-error: true
+        run: |
+          .build/release/audiosearch doctor --db "$RUNNER_TEMP/doctor.db" || true
+          echo "---"
+          echo "Live transcription tests self-skip when assets are absent."
+          echo "The CLI contract below is engine independent and always runs."
+
+      # The real guard on a runner without speech models: exit codes and stream
+      # discipline, checked against the built binary (plan Sections 10.1, 10.2).
+      - name: CLI contract smoke test
+        run: Scripts/smoke.sh .build/release/audiosearch

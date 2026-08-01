@@ -1,5 +1,7 @@
 # audiosearch
 
+[![CI](https://github.com/DaveKT/audiosearch/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/DaveKT/audiosearch/actions/workflows/ci.yml)
+
 A native macOS command-line tool that transcribes a local audio/video library using
 Apple's on-device `SpeechAnalyzer`/`SpeechTranscriber`, stores timestamped transcript
 segments in SQLite with FTS5, and serves ranked, snippet-bearing full-text search over
@@ -75,13 +77,23 @@ swift build -c release   # release
 ## Testing
 
 ```bash
-swift test
+swift test                                        # unit tests
+Scripts/smoke.sh .build/release/audiosearch       # CLI contract against the real binary
 ```
 
 Audio test fixtures are generated at test setup via `say`, not committed as binary
 assets (plan Section 13.1). Segmentation fixtures recorded from real transcription
 runs (`Tests/Fixtures/runs/*.json`) are committed, since they're small JSON and let
 segmentation logic be tested without live transcription (Section 13.2).
+
+`Scripts/smoke.sh` covers what unit tests structurally can't: the exit-code taxonomy and
+the stdout/stderr split, exercised through the actual binary. It needs no speech assets,
+which is what lets CI verify something real — the handful of tests that do drive the
+analyzer self-skip when models aren't installed, as they are on a GitHub runner.
+
+CI runs on `macos-26` (Apple silicon, Xcode 26.6 pinned) on every push and pull request.
+Earlier runner images cannot build this at all: `SpeechAnalyzer` does not exist in their
+SDKs.
 
 ## Usage
 
