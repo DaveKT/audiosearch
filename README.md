@@ -87,13 +87,18 @@ runs (`Tests/Fixtures/runs/*.json`) are committed, since they're small JSON and 
 segmentation logic be tested without live transcription (Section 13.2).
 
 `Scripts/smoke.sh` covers what unit tests structurally can't: the exit-code taxonomy and
-the stdout/stderr split, exercised through the actual binary. It needs no speech assets,
-which is what lets CI verify something real — the handful of tests that do drive the
-analyzer self-skip when models aren't installed, as they are on a GitHub runner.
+the stdout/stderr split, exercised through the actual binary.
 
 CI runs on `macos-26` (Apple silicon, Xcode 26.6 pinned) on every push and pull request.
-Earlier runner images cannot build this at all: `SpeechAnalyzer` does not exist in their
+Earlier runner images cannot build this at all — `SpeechAnalyzer` does not exist in their
 SDKs.
+
+The badge covers both builds, all 97 unit tests, and 35 CLI contract assertions. It does
+not cover transcription accuracy or throughput: GitHub runners report `en-US` as
+unsupported by the Speech framework entirely, so the few tests that drive the analyzer
+skip there. That is why the smoke script is engine-independent — otherwise a green badge
+would be resting largely on skipped tests. Accuracy and throughput are measured locally;
+the numbers are in plan Section 14.1.
 
 ## Usage
 

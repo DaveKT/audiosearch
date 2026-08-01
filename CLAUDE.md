@@ -211,12 +211,20 @@ Two things about it are deliberate and shouldn't be "simplified":
 - **`runs-on: macos-26`, with Xcode 26.6 pinned.** Earlier runner images cannot compile
   this at all — `SpeechAnalyzer` is absent from their SDKs. The pin means an image change
   fails loudly rather than silently building against a different toolchain.
-- **`Scripts/smoke.sh` exists because CI has no speech assets.** The tests that drive the
-  analyzer self-skip on a runner, so a green badge resting only on `swift test` would be
-  largely resting on skips. The smoke script asserts the engine-independent contract —
-  the exit-code taxonomy and the stdout/stderr split — against the real binary, so the
-  badge means something. Run it locally before pushing anything that touches the CLI
-  surface, and add to it when you add a command or an exit path.
+- **`Scripts/smoke.sh` exists because CI cannot transcribe anything.** The runner reports
+  `en-US (NOT SUPPORTED on this system)` — not merely uninstalled assets but no speech
+  support at all — so `doctor` exits 3 there and the tests that drive the analyzer return
+  early. A green badge resting only on `swift test` would therefore be resting partly on
+  skips. The smoke script asserts the engine-independent contract — the exit-code taxonomy
+  and the stdout/stderr split — against the real binary, so the badge means something.
+  Run it locally before pushing anything that touches the CLI surface, and add to it when
+  you add a command or an exit path.
+
+**What the badge does and does not cover.** It covers: both builds, all 97 unit tests
+(segmentation against recorded fixtures, the store and its FTS delete protocol, query
+translation, output formats, the walker's guards, hashing), and 35 CLI contract
+assertions. It does **not** cover live transcription accuracy or throughput — no runner
+can. Those are verified locally, and the numbers live in plan Section 14.1.
 
 Audio fixtures are generated, not committed as source — `say -o Tests/Fixtures/*.aiff
 "..."` produces deterministic audio with known expected transcripts (Section 13.1).
