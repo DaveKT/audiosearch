@@ -17,15 +17,19 @@ just an entry point.
 **Underway. Not usable yet** — nothing can put anything into the index until M2.
 
 The M0 spike (throwaway code proving out the riskiest technical assumptions before any
-structural work) is complete, with one item still open:
+structural work) is complete:
 
 - No Speech authorization prompt appears from a bare CLI binary
-- `AVAudioFile` opens `.mov`/`.mp4` directly — no `AVAssetReader` fallback needed
+- `AVAudioFile` opens `.mov`/`.mp4`/`.mp3` directly — no `AVAssetReader` fallback needed
 - Transcript runs are word-level
 - FTS5 works through GRDB out of the box
-- ~39x real-time transcription throughput measured on Apple silicon
-- Still open: accuracy on proper nouns/jargon, pending a representative real-world
-  audio sample
+- 50x real-time transcription throughput on a real 2h15m podcast, 100% coverage, no
+  hallucination loops
+- Accuracy measured against real audio: excellent on general speech and common technical
+  vocabulary; **niche proper nouns fail** (`PCalc` → `peacalc`, `Backblaze` → `Backlaze`,
+  `Sentry` → `Century`), and searching the correct spelling finds nothing. See plan
+  Section 14.1 — this is a known limitation with no vocabulary lever on the platform,
+  and the response to it is still an open decision
 
 M1 is complete: the command tree, exit code taxonomy and stream discipline; database
 location and library root resolution; the schema with its migration path; and the whole

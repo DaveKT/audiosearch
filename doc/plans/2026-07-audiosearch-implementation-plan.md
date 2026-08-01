@@ -868,15 +868,86 @@ answer changes later sections. Results:
 - Time a 30 minute file end to end for a throughput baseline — **done: ~39x real time**
   (36 minutes of synthesized audio transcribed in 55s, release build, this machine).
 - Transcribe a sample representative of the real corpus and assess accuracy on proper
-  nouns and domain jargon, per Risk 6 — **not done.** Needs a real audio sample from the
-  actual corpus; synthesized `say` fixtures can't stand in for this since they're
-  generated from clean text rather than real speech. Blocking on a sample file.
+  nouns and domain jargon, per Risk 6 — **done 2026-08-01.** Sample: a 2h15m two-speaker
+  tech podcast (stereo 48 kHz MP3, 8111s). Results in Section 14.1 below. Summary:
+  general and common-technical accuracy is excellent; niche proper nouns fail
+  systematically, and searching their correct spelling returns nothing.
 - Record one set of `RawRun` output as the first segmentation fixture — **done.**
   `Tests/Fixtures/runs/known-01.json` and `known-02.json` committed.
 
 Spike code lives in `Sources/audiosearch/main.swift` (throwaway, to be replaced when M1
 begins) and `Tests/audiosearchTests/ExtractRunsTests.swift`; audio fixtures are in
 `Tests/Fixtures/` (not committed as binary assets beyond what's needed — see Section 13.1).
+
+### 14.1 Accuracy assessment against a real sample (Risk 6), 2026-08-01
+
+Sample: a 2h15m two-speaker conversational tech podcast, stereo 48 kHz MP3. Measured
+with a throwaway harness in `scratch/accuracy-check/` mirroring `Transcriber.swift`.
+There is no reference transcript for this material, so this is a named-entity and
+consistency assessment, not a word error rate.
+
+Mechanical results, all good:
+
+| Measure | Result |
+| --- | --- |
+| Throughput | **50.4x real time** (8111s of audio in 161s, release build) — better than M0's 39x on synthesized mono |
+| Coverage | **100%** — last run ends at 8110s of 8111.5s |
+| Output | 25,900 runs, 131,318 characters, 2,451 unique words |
+| Hallucination loops | **None.** Longest identical-token run is 3x `yeah,`, which is natural speech. Worth noting explicitly, since whisper is prone to repetition degeneration on silence |
+| Input path | MP3 opens through `AVAudioFile` directly, extending M0's `.aiff`/`.mp4`/`.mov` result |
+
+Accuracy splits cleanly into three classes:
+
+**1. General conversational English — excellent.** Reads cleanly end to end. Disfluencies
+and false starts are preserved faithfully rather than smoothed away.
+
+**2. Common technical vocabulary — excellent.** `iPhone`, `iPad`, `macOS`, `iOS`,
+`MacBook`, `Safari`, `App Store`, `WWDC`, `iCloud`, `Finder`, `Python`, `UNIX`,
+`GitHub`, `Slack`, `Dropbox`, `Hazel`, `Keyboard Maestro`, `Stream Deck` all correct,
+including camelCase forms the model has to know rather than infer.
+
+Casing of app names is inconsistent (`audio hijack` 11 of 11 lowercase, `keyboard
+maestro` 7 of 9). **This costs nothing.** FTS5's `unicode61` tokenizer folds case, so
+recall is unaffected — confirmed by querying the real index.
+
+**3. Niche proper nouns — systematic failure.** This is Risk 6, and it is real:
+
+| Correct | Transcribed as | Correct occurrences |
+| --- | --- | --- |
+| Myke Hurley | Mike Hurley | 0 of 6 |
+| Jason Snell | Jason Snow (x3), Snell (x1) | 1 of 4 |
+| Snell Talk | snow talk / Snow Talk | 0 of 4 |
+| Backblaze | Backlaze | 0 of 1 |
+| Sentry | Century | 0 of 2 |
+| PCalc | peakalc (x2), peacalc (x2) | 0 of 4 |
+| TextSniper | tech sniper (x3), text sniper (x1) | 0 of 4 |
+| Claude Code | clod code | 0 of 1 |
+
+Well-known names survive (`Stephen Hackett`, `Gruber`, `Marco`, `Panic`, `Six Colors`,
+`Relay`, `Connected`). What fails is the intersection of *niche* and *unusually spelled*:
+portmanteau product names and personal names with non-standard orthography. Failures are
+often **inconsistent** across a single episode (`peakalc` and `peacalc`; `tech sniper`
+and `text sniper`), which rules out a simple one-to-one correction table.
+
+**The consequence for this tool specifically.** Searching the *correct* spelling of every
+failed entity returns **zero results** against the real index: `PCalc` 0, `Backblaze` 0,
+`Sentry` 0, `Myke Hurley` 0, `Snell Talk` 0, `TextSniper` 0, `Claude Code` 0. The content
+is indexed but unreachable by the name a user would actually type, and it fails *silently*
+— "no matches" is indistinguishable from "never discussed."
+
+That silent-failure property is the same class of defect Section 4 was written to
+eliminate. It does not make the tool useless: searching for topics, phrases and ordinary
+content works well, which is most of what the corpus is. But entity search is a common
+way to search an audio library, and this is a real hole in it.
+
+**On the mitigation.** Risk 6's stated fallback is a whisper-based module with prompt
+conditioning. That is a weaker remedy than it first appears: whisper's prompt is a few
+hundred tokens, enough to prime a handful of terms per file, not a corpus's worth of
+proper nouns — and it needs the vocabulary known in advance. An engine swap should not
+be treated as an automatic fix for this finding. A query-time alias layer in
+`Search.swift` (user-maintained, engine-independent, no retranscription) addresses the
+observed failure more directly and far more cheaply, and is recorded as decision 8 in
+Section 15.
 
 ### M1: Skeleton, schema, search (no transcription) — Complete 2026-08-01
 
@@ -989,6 +1060,16 @@ M1 through M4 constitute the working tool, at roughly 900 lines of Swift.
 7. **Empty-file retry policy.** `status='empty'` currently behaves like `'ok'` for
    staleness. Whether an engine change should retry empty files more eagerly than
    successful ones is unresolved.
+8. **Query-time alias layer.** Raised by the Section 14.1 findings. A user-maintained map
+   from a correct spelling to the forms the engine actually produces (`Backblaze` →
+   `Backlaze`, `PCalc` → `peacalc`/`peakalc`, `Myke` → `Mike`) expanded during query
+   translation, so `search Backblaze` becomes `"Backblaze" OR "Backlaze"`. Attractive
+   because it is engine-independent, needs no retranscription, costs one table and a few
+   lines in `Search.swift`, and degrades to today's behaviour when the map is empty.
+   Open questions: where the map lives (a `meta` key, a dotfile, an `aliases` table);
+   whether entries can be suggested automatically from near-miss tokens; and whether
+   `status` should surface how often aliases fire. Would slot into M3 or M5. **Not
+   built — depends on whether the engine is kept at all.**
 
 ## 16. Risks
 
@@ -999,7 +1080,7 @@ M1 through M4 constitute the working tool, at roughly 900 lines of Swift.
 | 3 | System SQLite lacks FTS5 through GRDB | **Resolved in M0.** GRDB supports FTS5 out of the box (its manifest unconditionally sets `SQLITE_ENABLE_FTS5`); no trait, flag, or bundled-SQLite fallback needed |
 | 4 | Run granularity finer or coarser than assumed, invalidating Section 7.5 | **Resolved in M0.** Runs are word-level, confirmed against real transcription output and unit-tested against the SDK's actual attribute type |
 | 5 | Speech framework API churn across macOS 26.x point releases | All framework use isolated in `Transcriber.swift` and `AudioInput.swift`; integration tests against generated fixtures |
-| 6 | Accuracy shortfall on jargon, proper nouns, and callsigns, with no vocabulary lever | **Not yet measured.** M0's other items are complete; this one needs a real corpus sample, which wasn't available during the spike. If unacceptable, substitute a whisper-based transcription module supporting prompt conditioning; the substitution is confined to `Transcriber.swift`, `AudioInput.swift`, and `Segmenter.swift`, since Sections 6, 8, 9, 10, and 11 are engine independent |
+| 6 | Accuracy shortfall on jargon, proper nouns, and callsigns, with no vocabulary lever | **Measured 2026-08-01 and confirmed, in a narrow form. See Section 14.1.** General and common-technical accuracy is excellent and throughput is better than baseline (50.4x). Niche proper nouns fail systematically and inconsistently (`PCalc`→`peacalc`/`peakalc`, `Backblaze`→`Backlaze`, `Sentry`→`Century`, `Myke`→`Mike`), and searching the correct spelling returns zero results — a silent failure. Not fatal: topic and phrase search, the bulk of real use, works well. The whisper substitution remains available and stays confined to `Transcriber.swift`/`AudioInput.swift`/`Segmenter.swift`, but prompt conditioning is a weak remedy at corpus scale; a query-time alias layer (Section 15, decision 8) targets the observed failure better. **Open decision — no engine change made** |
 | 7 | Asset download required on first run in an offline environment | `doctor` reports asset state explicitly; `index` fails fast with exit code 3 rather than mid-batch |
 | 8 | `.unsafeFlags` blocks future extraction of a library target | **Resolved in M1: did not occur.** The `__TEXT,__info_plist` linker section it existed to install was dropped from the manifest, since M0 proved no authorization prompt appears (Risk 1). The shipped manifest has no `.unsafeFlags` at all. Reinstate only if a macOS point release starts prompting, and prefer a build script over the flags if so |
 | 9 | `AVAudioFile` does not open video containers, requiring a second `AVAssetReader` input path | **Resolved in M0: did not occur.** `AVAudioFile` opens `.mov` and `.mp4` directly, including files with an actual encoded video track. Video extensions stay in the M2 allowlist as originally hoped; the `AVAssetReader` path is documented in Section 7.2 but unbuilt |

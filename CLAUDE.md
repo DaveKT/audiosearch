@@ -4,9 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-M0 (spike) is complete except one item pending a real audio sample (accuracy on
-jargon/proper nouns, Risk 6). **M1 (skeleton, schema, search) is complete.** M2
-(transcription and indexing) is next.
+**M0 and M1 are both complete.** M2 (transcription and indexing) is next, with one
+decision outstanding that could change what M2 builds — see "Risk 6 is settled" below.
 
 - `Package.swift` — the Section 5.2 manifest, with one deliberate difference: no
   `.unsafeFlags` `__TEXT,__info_plist` linker section, since M0 proved no Speech
@@ -27,6 +26,25 @@ jargon/proper nouns, Risk 6). **M1 (skeleton, schema, search) is complete.** M2
   `known-02.mp4`/`.mov`, a ~36 min `long-30min.aiff` used for the throughput
   baseline) and `Tests/Fixtures/runs/*.json` recorded `RawRun` fixtures for future
   `Segmenter` tests (plan Section 13.2).
+
+### Risk 6 is settled (measured 2026-08-01, plan Section 14.1)
+
+Measured against a real 2h15m two-speaker podcast, not a `say` fixture. Throughput is
+**50.4x real time** and coverage is 100%; general and common-technical accuracy is
+excellent (`iPhone`, `macOS`, `Keyboard Maestro`, `Stream Deck` all correct), and there
+are **no hallucination loops**. Casing of app names is inconsistent but costs nothing,
+since FTS5 folds case.
+
+What does fail: **niche proper nouns**, systematically and *inconsistently* —
+`PCalc`→`peacalc`/`peakalc`, `TextSniper`→`tech sniper`/`text sniper`,
+`Backblaze`→`Backlaze`, `Sentry`→`Century`, `Myke`→`Mike`, `Snell`→`Snow`. Searching
+the correct spelling returns **zero** results, silently. Don't "fix" this by tweaking
+`Segmenter` or the schema — it happens upstream of both, inside the OS model, and there
+is no vocabulary lever (plan Section 2).
+
+**No engine change has been made, and this is not yours to decide unprompted.** Section
+15 decision 8 proposes a query-time alias layer in `Search.swift` as the cheap,
+engine-independent alternative to the whisper substitution. Both are open.
 
 The plan document remains authoritative — read it before changing course on
 architecture, and check it for "resolved in M0" / "resolved in M1" / "confirmed in
