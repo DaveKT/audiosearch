@@ -42,15 +42,22 @@ the correct spelling returns **zero** results, silently. Don't "fix" this by twe
 `Segmenter` or the schema — it happens upstream of both, inside the OS model, and there
 is no vocabulary lever (plan Section 2).
 
-**No engine change has been made, and this is not yours to decide unprompted.** Section
-15 decision 8 proposes a query-time alias layer in `Search.swift` as the cheap,
-engine-independent alternative to the whisper substitution. Both are open.
+**Decided 2026-08-01: the Apple engine stays.** Rather than substituting an engine, a
+new **M6 adds engine *selection*** (`--engine`, a `Transcriber` protocol, whisper as the
+first alternative). Through M5 the Apple engine remains the only one — don't build
+engine abstraction early, and don't swap the engine out. Section 15 decision 8 (a
+query-time alias layer in `Search.swift`) remains unbuilt and is now independent of the
+engine question, since every engine mangles some vocabulary.
 
 The plan document remains authoritative — read it before changing course on
 architecture, and check it for "resolved in M0" / "resolved in M1" / "confirmed in
 M0" notes before assuming something is still an open question. Plan Section 15's
 decisions 1, 2 and 6 were resolved while building M1 and are recorded there. Follow
-the milestone order (M0 → M1 → M2 → M3 → M4 → M5) rather than building out of order.
+the milestone order (M0 → M1 → … → M7) rather than building out of order. M6 (selectable
+transcription engines) and M7 (user manual) were added 2026-08-01 and sit deliberately at
+the end: M6 because the Apple engine is staying as the default until the tool is
+otherwise finished, M7 because a manual written before the CLI contract settles documents
+something that no longer exists.
 
 The repo is public at `https://github.com/DaveKT/audiosearch` (`main` branch). A
 top-level `README.md` is the human-facing entry point (status summary, build/test
@@ -83,7 +90,9 @@ the intended file layout (`Transcriber.swift`, `AudioInput.swift`, `Segmenter.sw
 `Walker.swift`, `Indexer.swift`, `Search.swift`, `Database.swift`, etc.) — one file
 per concern, with framework-specific code isolated to `Transcriber.swift` and
 `AudioInput.swift` so the transcription engine can be swapped later without touching
-schema, indexing, search, or CLI code (plan Risk 6).
+schema, indexing, search, or CLI code (plan Risk 6). That isolation is what **M6**
+(selectable engines) cashes in — keep it intact even though nothing exercises it before
+then.
 
 Key design decisions worth knowing before touching related code:
 

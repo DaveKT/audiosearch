@@ -28,8 +28,9 @@ structural work) is complete:
 - Accuracy measured against real audio: excellent on general speech and common technical
   vocabulary; **niche proper nouns fail** (`PCalc` → `peacalc`, `Backblaze` → `Backlaze`,
   `Sentry` → `Century`), and searching the correct spelling finds nothing. See plan
-  Section 14.1 — this is a known limitation with no vocabulary lever on the platform,
-  and the response to it is still an open decision
+  Section 14.1. The platform offers no vocabulary lever, so this is a known limitation
+  of the default engine rather than something to be tuned away; the response is M6
+  below, not a change to how indexing or search work
 
 M1 is complete: the command tree, exit code taxonomy and stream discipline; database
 location and library root resolution; the schema with its migration path; and the whole
@@ -40,7 +41,19 @@ M2 is next, and is what makes the tool do anything: transcription, the directory
 and indexing. Until then `index`, `prune`, `export` and `doctor` are stubs that exit
 telling you which milestone they arrive in.
 
-See plan Section 14 for the full milestone breakdown and Section 16 for tracked risks.
+The remaining milestones, in order: **M3** incremental indexing and robustness, **M4**
+durability (`export` / `--import`), **M5** polish, **M6** selectable transcription
+engines, **M7** a real user manual.
+
+M6 and M7 sit at the end on purpose. Apple's on-device engine stays the default and the
+only engine until the tool is otherwise finished — M6 adds the ability to *choose* a
+different one (`--engine`, whisper as the first alternative, prompt conditioning via
+`--vocabulary`), which is the response to the accuracy limits above rather than a
+replacement of what works. M7 comes last because a manual written before the CLI
+contract settles documents something that no longer exists.
+
+See plan Section 14 for the full milestone breakdown, Section 14.1 for the accuracy
+measurements, and Section 16 for tracked risks.
 
 ## Requirements
 
@@ -111,6 +124,9 @@ library root so a bare `index` can't accidentally scan your home directory;
 
 Exit codes: `0` success, `1` no matches or partial indexing failure, `2` usage error,
 `3` environment error (missing index, missing assets, unsupported locale).
+
+This section is a summary, and deliberately stays one. A full user manual is M7, at
+which point this README shrinks back to an entry point that links to it.
 
 ## License
 

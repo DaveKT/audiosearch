@@ -1,8 +1,8 @@
 Plan: Audiosearch Implementation
 ===============================================================================
 
-> Status: Underway — M0 spike complete (2026-07-30, one item pending); M1 complete
-> (2026-08-01). M2 next. See Section 14.
+> Status: Underway — M0 complete (2026-07-30; accuracy item closed 2026-08-01), M1
+> complete (2026-08-01). M2 next. Milestones run M0 through M7. See Section 14.
 
 Native macOS command line utility for transcribing and searching a local audio and video
 library. Replaces `audio-search.rb`, a Ruby script that shelled out to `ffmpeg` and
@@ -31,17 +31,25 @@ removes the need to vendor a model file, link a C++ inference library, or implem
 decode and resampling. Inference runs on the Neural Engine, which is materially more power
 efficient than GPU-based alternatives for long batches on a laptop.
 
-Constraints accepted as a consequence, recorded so they are not rediscovered later:
+Constraints accepted as a consequence, recorded so they are not rediscovered later.
+**These are properties of the Apple engine, and they bind M0 through M5, where it is the
+only engine.** M6 adds engine selection, which is the escape hatch for the last two; the
+first three remain true of the Apple engine whenever it is the one in use.
 
 - **Hard floor at macOS 26 on Apple silicon.** Intel Macs cannot run these APIs on device.
 - **No custom vocabulary.** `SpeechAnalyzer` provides no equivalent of `contextualStrings`
   or of prompt conditioning. Proper nouns, callsigns, place names, and technical jargon
-  get no lever. See Risk 6.
+  get no lever. Measured against real audio in Section 14.1: this is not theoretical, and
+  it is the reason M6 exists. See Risk 6.
 - **No model pinning.** Operating system updates may alter transcripts, and the index
   cannot detect this reliably. See Section 6.2 and Risk 2.
-- **No model selection.** A larger or more accurate model is not selectable as an escape
-  hatch for difficult audio.
-- **Permanent platform lock-in.** The transcription layer is Apple-only by construction.
+- **No model selection *within* the Apple engine.** A larger or more accurate Apple model
+  is not selectable as an escape hatch for difficult audio, and M6 does not change that —
+  it lets a different engine be chosen instead.
+- **Platform lock-in through M5.** The transcription layer is Apple-only by construction
+  until M6, which is why Section 5.1 confines framework code to `Transcriber.swift` and
+  `AudioInput.swift` from the start. Everything else in the design is already engine
+  independent.
 
 ## 3. Non-goals
 
@@ -845,7 +853,7 @@ those tests fast and unambiguous.
 
 ## 14. Milestones
 
-### M0: Spike (one day, before any structural work) — Complete 2026-07-30, one item pending
+### M0: Spike (one day, before any structural work) — Complete 2026-07-30; accuracy item closed 2026-08-01
 
 A throwaway `main.swift`, no persistence, no CLI parsing. Every item was a question whose
 answer changes later sections. Results:
@@ -1021,7 +1029,8 @@ on an unmounted volume.
 
 Acceptance: export, delete the database, import, and search returns identical results.
 
-M1 through M4 constitute the working tool, at roughly 900 lines of Swift.
+M1 through M4 constitute the working tool, at roughly 900 lines of Swift. M5 polishes it,
+M6 opens up the transcription engine, and M7 documents the result.
 
 ### M5: Polish and migration
 
@@ -1031,6 +1040,71 @@ M1 through M4 constitute the working tool, at roughly 900 lines of Swift.
 - Shell completions via `ArgumentParser` completion script generation
 - Swift 6 language mode migration, per-file via upcoming feature flags
 - Optional sidecar export (Section 15, decision 5)
+
+### M6: Selectable transcription engines
+
+Decided 2026-08-01, in response to the Section 14.1 accuracy findings. The Apple engine
+is **kept as the default and remains the only engine through M5** — this milestone adds
+the ability to choose a different one, it does not replace anything.
+
+The motivation is Section 14.1: niche proper nouns fail with no vocabulary lever, and
+that ceiling is a property of the OS model rather than of this tool. Some corpora will
+want an engine that accepts prompt conditioning even at a cost in throughput and power.
+
+The groundwork already exists and should not be re-litigated: Section 5.1 confines
+framework-specific code to `Transcriber.swift` and `AudioInput.swift`, and Sections 6,
+8, 9, 10 and 11 are engine independent by construction. Risk 6's mitigation clause has
+always described this substitution; M6 is that clause, generalised from "replace" to
+"select".
+
+- Extract a `Transcriber` protocol from the concrete Apple implementation:
+  audio URL plus locale in, `[RawRun]` plus duration out, errors and an `empty` result
+  distinguishable from a failure
+- `--engine <name>` on `index`, persisted per file rather than globally, since a corpus
+  may legitimately be transcribed by more than one engine
+- At least one alternative implementation, most likely whisper via `whisper-cli`, with
+  prompt conditioning exposed as `--vocabulary`. Note the constraint recorded in Section
+  14.1: a whisper prompt holds a few hundred tokens, so this primes a handful of terms
+  per file and is not a corpus-wide fix
+- Engine identity (Section 6.2) widens from a macOS-build heuristic to a real identifier
+  for engines that expose one, which makes staleness detection *more* accurate rather
+  than less for those engines
+- `doctor` reports which engines are available and why any are not
+- `status` reports the engine mix across the corpus
+
+Acceptance: the same file transcribed under two engines produces two sets of segments
+distinguishable by engine; switching the default engine marks affected rows stale for
+reporting without retranscribing; search, export and prune behave identically regardless
+of which engine produced a row.
+
+Caution for whoever builds this: reintroducing a subprocess re-opens the
+shell-interpolation defect Section 4 was written to eliminate. Any external engine must
+be invoked with an argument vector, never an interpolated command string, and its
+non-zero exits and empty output must map onto `status='failed'` and `status='empty'`
+rather than being silently accepted.
+
+### M7: User manual
+
+Last, deliberately: documentation written before the interface settles documents
+something that no longer exists. Everything M1 through M6 changes about the CLI contract
+should have landed before this starts.
+
+- A real manual covering installation, first run and asset download, the indexing model
+  (content hashing, staleness, why retranscription is opt-in), every subcommand and
+  flag, the query language including the sanitization rules and when `--raw` is wanted,
+  output formats and how to compose them with other tools, and recovery via `export`
+- An honest limitations chapter, including the Section 14.1 accuracy findings stated
+  plainly — a user who searches `Backblaze` and gets nothing needs to be able to find
+  out why
+- `man audiosearch`, generated rather than hand-maintained where possible;
+  `swift-argument-parser`'s manual generation plugin is already available in the
+  toolchain and covers the command tree, leaving the prose chapters to be written
+- Worked examples against a realistic corpus, not toy fixtures
+- README reduced to an entry point that links to the manual, rather than slowly becoming
+  the manual
+
+Acceptance: someone who has never seen the tool can install it, index a directory, and
+find something in it without reading the plan document or the source.
 
 ## 15. Open decisions
 
@@ -1069,7 +1143,9 @@ M1 through M4 constitute the working tool, at roughly 900 lines of Swift.
    Open questions: where the map lives (a `meta` key, a dotfile, an `aliases` table);
    whether entries can be suggested automatically from near-miss tokens; and whether
    `status` should surface how often aliases fire. Would slot into M3 or M5. **Not
-   built — depends on whether the engine is kept at all.**
+   built.** Now independent of the engine question, since the engine is being kept
+   (Risk 6) and M6 adds alternatives rather than replacing the default — an alias layer
+   helps whichever engine is in use, because every engine mangles *some* vocabulary.
 
 ## 16. Risks
 
@@ -1080,7 +1156,7 @@ M1 through M4 constitute the working tool, at roughly 900 lines of Swift.
 | 3 | System SQLite lacks FTS5 through GRDB | **Resolved in M0.** GRDB supports FTS5 out of the box (its manifest unconditionally sets `SQLITE_ENABLE_FTS5`); no trait, flag, or bundled-SQLite fallback needed |
 | 4 | Run granularity finer or coarser than assumed, invalidating Section 7.5 | **Resolved in M0.** Runs are word-level, confirmed against real transcription output and unit-tested against the SDK's actual attribute type |
 | 5 | Speech framework API churn across macOS 26.x point releases | All framework use isolated in `Transcriber.swift` and `AudioInput.swift`; integration tests against generated fixtures |
-| 6 | Accuracy shortfall on jargon, proper nouns, and callsigns, with no vocabulary lever | **Measured 2026-08-01 and confirmed, in a narrow form. See Section 14.1.** General and common-technical accuracy is excellent and throughput is better than baseline (50.4x). Niche proper nouns fail systematically and inconsistently (`PCalc`→`peacalc`/`peakalc`, `Backblaze`→`Backlaze`, `Sentry`→`Century`, `Myke`→`Mike`), and searching the correct spelling returns zero results — a silent failure. Not fatal: topic and phrase search, the bulk of real use, works well. The whisper substitution remains available and stays confined to `Transcriber.swift`/`AudioInput.swift`/`Segmenter.swift`, but prompt conditioning is a weak remedy at corpus scale; a query-time alias layer (Section 15, decision 8) targets the observed failure better. **Open decision — no engine change made** |
+| 6 | Accuracy shortfall on jargon, proper nouns, and callsigns, with no vocabulary lever | **Measured 2026-08-01 and confirmed, in a narrow form. See Section 14.1.** General and common-technical accuracy is excellent and throughput is better than baseline (50.4x). Niche proper nouns fail systematically and inconsistently (`PCalc`→`peacalc`/`peakalc`, `Backblaze`→`Backlaze`, `Sentry`→`Century`, `Myke`→`Mike`), and searching the correct spelling returns zero results — a silent failure. Not fatal: topic and phrase search, the bulk of real use, works well. **Resolved 2026-08-01: keep the Apple engine, and add engine selection as M6** rather than substituting one engine for another. The substitution stays confined to `Transcriber.swift`/`AudioInput.swift`/`Segmenter.swift` as always planned. Note that prompt conditioning is a weak remedy at corpus scale (Section 14.1), so M6 is not by itself a fix; a query-time alias layer (Section 15, decision 8) targets the observed failure more directly and more cheaply |
 | 7 | Asset download required on first run in an offline environment | `doctor` reports asset state explicitly; `index` fails fast with exit code 3 rather than mid-batch |
 | 8 | `.unsafeFlags` blocks future extraction of a library target | **Resolved in M1: did not occur.** The `__TEXT,__info_plist` linker section it existed to install was dropped from the manifest, since M0 proved no authorization prompt appears (Risk 1). The shipped manifest has no `.unsafeFlags` at all. Reinstate only if a macOS point release starts prompting, and prefer a build script over the flags if so |
 | 9 | `AVAudioFile` does not open video containers, requiring a second `AVAssetReader` input path | **Resolved in M0: did not occur.** `AVAudioFile` opens `.mov` and `.mp4` directly, including files with an actual encoded video track. Video extensions stay in the M2 allowlist as originally hoped; the `AVAssetReader` path is documented in Section 7.2 but unbuilt |
